@@ -19,7 +19,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- Fail-fast: корректная проверка секретов (без '=') ----------
+      # ---------- Fail-fast проверка секретов ----------
       - name: Validate required secrets
         env:
           REQ_YC_SA_JSON_B64:        ${{ secrets.YC_SA_JSON_B64 }}
@@ -33,18 +33,14 @@ jobs:
         shell: bash
         run: |
           set -e
-          check() { local v="$1"; [ -n "${!v}" ] && [ "${!v}" != "null" ] || { echo "❌ Missing $v"; exit 1; }; }
-          for v in \
-            REQ_YC_SA_JSON_B64 REQ_YC_FOLDER_ID REQ_YC_CLOUD_ID \
-            REQ_APIGW_NAME REQ_WEB_BUCKET REQ_S3_ENDPOINT \
-            REQ_S3_ACCESS_KEY_ID REQ_S3_SECRET_ACCESS_KEY
-          do
+          check(){ local v="$1"; [ -n "${!v}" ] && [ "${!v}" != "null" ] || { echo "❌ Missing $v"; exit 1; }; }
+          for v in REQ_YC_SA_JSON_B64 REQ_YC_FOLDER_ID REQ_YC_CLOUD_ID REQ_APIGW_NAME REQ_WEB_BUCKET REQ_S3_ENDPOINT REQ_S3_ACCESS_KEY_ID REQ_S3_SECRET_ACCESS_KEY; do
             check "$v"
           done
           echo "✅ Secrets check passed"
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install jq + netcat
+        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd dnsutils
 
       # ---------- Установка YC CLI + PATH через GITHUB_ENV ----------
       - name: Install YC CLI
@@ -55,17 +51,60 @@ jobs:
           echo "PATH=$HOME/yandex-cloud/bin:$PATH" >> "$GITHUB_ENV"
           "$HOME/yandex-cloud/bin/yc" --version
 
-      # ---------- Аутентификация (ключ в base64) ----------
-      - name: YC auth (decode base64 key)
+      # ---------- Preflight сети к API (DNS/TCP/TLS) ----------
+      - name: Network preflight to api.cloud.yandex.net:443
+        shell: bash
+        run: |
+          set -e
+          echo "DNS:"
+          dig +short api.cloud.yandex.net || true
+          echo "TCP 443:"
+          nc -zv api.cloud.yandex.net 443
+          echo "TLS (SNI) hello:"
+          echo | openssl s_client -connect api.cloud.yandex.net:443 -servername api.cloud.yandex.net -brief
+
+      # ---------- Аутентификация (ключ в base64) + конфиг эндпоинта ----------
+      - name: YC auth (decode base64 key) + endpoint
         shell: bash
         env:
           YC_SA_JSON_B64: ${{ secrets.YC_SA_JSON_B64 }}
         run: |
+          set -e
           echo "$YC_SA_JSON_B64" | base64 -d > key.json
           yc config set service-account-key key.json
           yc config set cloud-id  "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
+          # основной эндпоинт
           yc config set endpoint api.cloud.yandex.net
+
+      # ---------- Обёртка с ретраями для yc-команд ----------
+      - name: Define yc_retry helpers
+        shell: bash
+        run: |
+          cat <<'EOF' >> $GITHUB_ENV
+          YC_BIN=yc
+          EOF
+          cat <<'EOS' > yc_retry.sh
+          #!/usr/bin/env bash
+          set -o pipefail
+          try_yc() {
+            local tries=${1:-8}; shift
+            local delay=2
+            local cmd=("$@")
+            for i in $(seq 1 $tries); do
+              "${cmd[@]}" && return 0
+              code=$?
+              echo "yc failed (exit $code), attempt $i/$tries. Sleeping ${delay}s..."
+              sleep $delay
+              delay=$((delay*2))
+              [ $delay -gt 30 ] && delay=30
+            done
+            # last try with verbose
+            echo "Final attempt with --debug:"
+            "${cmd[@]}" --debug
+          }
+          EOS
+          chmod +x yc_retry.sh
 
       # ---------- Node.js окружение ----------
       - name: Setup Node
@@ -84,26 +123,28 @@ jobs:
           cd server
           zip -r ../server.zip .
 
-      - name: Ensure function exists
+      - name: Ensure function exists (with retry)
         id: fn
         shell: bash
         run: |
           set -e
           FN_NAME="form-networking-fn"
-          if yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
+          ./yc_retry.sh try_yc 8 yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1 \
+            && EXISTS=1 || EXISTS=0
+          if [ "$EXISTS" = "1" ]; then
             echo "exists=1" >> "$GITHUB_OUTPUT"
           else
-            yc serverless function create --name "$FN_NAME" --folder-id "$YC_FOLDER_ID"
+            ./yc_retry.sh try_yc 8 yc serverless function create --name "$FN_NAME" --folder-id "$YC_FOLDER_ID"
             echo "exists=0" >> "$GITHUB_OUTPUT"
           fi
-          FN_ID=$(yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .id)
+          FN_ID=$(./yc_retry.sh try_yc 8 yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .id)
           echo "id=$FN_ID" >> "$GITHUB_OUTPUT"
           echo "FN_ID=$FN_ID"
 
-      - name: Deploy function version
+      - name: Deploy function version (with retry)
         shell: bash
         run: |
-          yc serverless function version create \
+          ./yc_retry.sh try_yc 8 yc serverless function version create \
             --function-id  "${{ steps.fn.outputs.id }}" \
             --runtime nodejs18 \
             --entrypoint index.handler \
@@ -112,7 +153,7 @@ jobs:
             --environment BOT_TOKEN="${BOT_TOKEN}",DEMO=1 \
             --source-path server.zip
 
-      - name: Wait function ACTIVE
+      - name: Wait function ACTIVE (poll with retry)
         shell: bash
         run: |
           for i in {1..40}; do
@@ -139,43 +180,37 @@ jobs:
         run: |
           set -e
           SA_NAME="form-networking-sa"
-          SA_ID=$(yc iam service-account get --name "$SA_NAME" --format json | jq -r '.id')
+          SA_ID=$(./yc_retry.sh try_yc 8 yc iam service-account get --name "$SA_NAME" --format json | jq -r '.id')
           if [ -z "$SA_ID" ] || [ "$SA_ID" = "null" ]; then
             echo "Failed to resolve SA_ID"; exit 1
           fi
           echo "id=$SA_ID" >> "$GITHUB_OUTPUT"
           echo "SA_ID=$SA_ID"
 
-      - name: Ensure API Gateway exists (with SA, idempotent, backoff)
+      - name: Ensure API Gateway exists (with SA, idempotent, retry)
         id: gw
         shell: bash
         env:
           APIGW_NAME: ${{ secrets.APIGW_NAME }}
         run: |
           set -e
-          yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1 && EXISTS=1 || EXISTS=0
+          ./yc_retry.sh try_yc 8 yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1 && EXISTS=1 || EXISTS=0
           if [ "$EXISTS" = "1" ]; then
             echo "Updating API GW: $APIGW_NAME"
-            for i in 1 2 3 4 5; do
-              yc --debug serverless api-gateway update \
-                --name "$APIGW_NAME" \
-                --folder-id "$YC_FOLDER_ID" \
-                --service-account-id "${{ steps.sa.outputs.id }}" \
-                --spec=apigw.yaml && break
-              sleep $((i*3))
-            done
+            ./yc_retry.sh try_yc 8 yc serverless api-gateway update \
+              --name "$APIGW_NAME" \
+              --folder-id "$YC_FOLDER_ID" \
+              --service-account-id "${{ steps.sa.outputs.id }}" \
+              --spec=apigw.yaml
           else
             echo "Creating API GW: $APIGW_NAME"
-            for i in 1 2 3 4 5; do
-              yc --debug serverless api-gateway create \
-                --name "$APIGW_NAME" \
-                --folder-id "$YC_FOLDER_ID" \
-                --service-account-id "${{ steps.sa.outputs.id }}" \
-                --spec=apigw.yaml && break
-              sleep $((i*3))
-            done
+            ./yc_retry.sh try_yc 8 yc serverless api-gateway create \
+              --name "$APIGW_NAME" \
+              --folder-id "$YC_FOLDER_ID" \
+              --service-account-id "${{ steps.sa.outputs.id }}" \
+              --spec=apigw.yaml
           fi
-          GW_URL=$(yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .domain)
+          GW_URL=$(./yc_retry.sh try_yc 8 yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .domain)
           echo "url=https://${GW_URL}" >> "$GITHUB_OUTPUT"
           echo "GW_URL=https://${GW_URL}"
 
@@ -191,7 +226,8 @@ jobs:
         shell: bash
         run: |
           pip install --upgrade --user awscli
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_ENV"
+          "$HOME/.local/bin/aws" --version || true
 
       - name: Configure AWS credentials (Yandex S3)
         uses: aws-actions/configure-aws-credentials@v4
