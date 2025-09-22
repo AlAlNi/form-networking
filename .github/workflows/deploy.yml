@@ -13,38 +13,45 @@ jobs:
       WEB_BUCKET:   ${{ secrets.WEB_BUCKET }}
       S3_ENDPOINT:  ${{ secrets.S3_ENDPOINT }}
       APIGW_NAME:   ${{ secrets.APIGW_NAME }}
-      # BOT_TOKEN можно держать как секрет или как env:
       BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- Fail-fast: проверяем все обязательные секреты ----------
+      # -------- fail-fast проверки секретов (без многословных test) --------
       - name: Validate required secrets
-        env:
-          CHECK_YC_SA_JSON_B64:   ${{ secrets.YC_SA_JSON_B64 }}
-          CHECK_YC_FOLDER_ID:     ${{ secrets.YC_FOLDER_ID }}
-          CHECK_YC_CLOUD_ID:      ${{ secrets.YC_CLOUD_ID }}
-          CHECK_APIGW_NAME:       ${{ secrets.APIGW_NAME }}
-          CHECK_WEB_BUCKET:       ${{ secrets.WEB_BUCKET }}
-          CHECK_S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
-          CHECK_S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+        shell: bash
         run: |
-          set -e
-          for v in CHECK_YC_SA_JSON_B64 CHECK_YC_FOLDER_ID CHECK_YC_CLOUD_ID CHECK_APIGW_NAME CHECK_WEB_BUCKET CHECK_S3_ACCESS_KEY_ID CHECK_S3_SECRET_ACCESS_KEY; do
-            if [ -z "${!v}" ]; then echo "Secret $v is empty"; exit 1; fi
-          done
+          need() { v="$1"; shift; [ -n "${!v}" ] || { echo "❌ Secret/env $v is empty"; exit 1; }; }
+          need YC_FOLDER_ID
+          need YC_CLOUD_ID
+          need APIGW_NAME
+          need WEB_BUCKET
+          need S3_ENDPOINT
+          need BOT_TOKEN || true
+          need GITHUB_REPOSITORY || true
+          need GITHUB_SHA || true
+          need S3_ACCESS_KEY_ID="${{ secrets.S3_ACCESS_KEY_ID }}"
+          need S3_SECRET_ACCESS_KEY="${{ secrets.S3_SECRET_ACCESS_KEY }}"
+          need YC_SA_JSON_B64="${{ secrets.YC_SA_JSON_B64 }}"
+          echo "✅ Secrets check passed"
 
-      - name: Install tools (jq + yc)
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      # -------- Установка YC CLI + глобальный PATH через GITHUB_ENV --------
+      - name: Install YC CLI
+        shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install -y jq
-          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i $HOME/yandex-cloud -n
-          echo "$HOME/yandex-cloud/bin" >> $GITHUB_PATH
-          yc version
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh \
+            | bash -s -- -i "$HOME/yandex-cloud" -n
+          echo "PATH=$HOME/yandex-cloud/bin:$PATH" >> "$GITHUB_ENV"
+          "$HOME/yandex-cloud/bin/yc" --version
 
-      # ---------- Auth ----------
+      # -------- Аутентификация (ключ в base64) --------
       - name: YC auth (decode base64 key)
+        shell: bash
         env:
           YC_SA_JSON_B64: ${{ secrets.YC_SA_JSON_B64 }}
         run: |
@@ -54,32 +61,41 @@ jobs:
           yc config set folder-id "$YC_FOLDER_ID"
           yc config set endpoint api.cloud.yandex.net
 
-      # ---------- Backend (Cloud Function) ----------
+      # -------- Node.js окружение для backend --------
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # -------- Backend: сборка и публикация функции --------
       - name: Install server deps
         working-directory: server
         run: npm ci
 
       - name: Zip server
+        shell: bash
         run: |
           cd server
           zip -r ../server.zip .
 
       - name: Ensure function exists
         id: fn
+        shell: bash
         run: |
           set -e
           FN_NAME="form-networking-fn"
           if yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
-            echo "exists=1" >> $GITHUB_OUTPUT
+            echo "exists=1" >> "$GITHUB_OUTPUT"
           else
             yc serverless function create --name "$FN_NAME" --folder-id "$YC_FOLDER_ID"
-            echo "exists=0" >> $GITHUB_OUTPUT
+            echo "exists=0" >> "$GITHUB_OUTPUT"
           fi
           FN_ID=$(yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .id)
-          echo "id=$FN_ID" >> $GITHUB_OUTPUT
+          echo "id=$FN_ID" >> "$GITHUB_OUTPUT"
           echo "FN_ID=$FN_ID"
 
       - name: Deploy function version
+        shell: bash
         run: |
           yc serverless function version create \
             --function-id  "${{ steps.fn.outputs.id }}" \
@@ -91,6 +107,7 @@ jobs:
             --source-path server.zip
 
       - name: Wait function ACTIVE
+        shell: bash
         run: |
           for i in {1..40}; do
             st=$(yc serverless function version list \
@@ -102,8 +119,9 @@ jobs:
           done
           echo "Function version not ACTIVE"; exit 1
 
-      # ---------- API Gateway ----------
+      # -------- API Gateway --------
       - name: Prepare OpenAPI with function id
+        shell: bash
         run: |
           cp infra/apigw-openapi.yaml apigw.yaml
           sed -i "s|\${FUNCTION_ID}|${{ steps.fn.outputs.id }}|g" apigw.yaml
@@ -111,6 +129,7 @@ jobs:
 
       - name: Resolve SA_ID
         id: sa
+        shell: bash
         run: |
           set -e
           SA_NAME="form-networking-sa"
@@ -118,11 +137,12 @@ jobs:
           if [ -z "$SA_ID" ] || [ "$SA_ID" = "null" ]; then
             echo "Failed to resolve SA_ID"; exit 1
           fi
-          echo "id=$SA_ID" >> $GITHUB_OUTPUT
+          echo "id=$SA_ID" >> "$GITHUB_OUTPUT"
           echo "SA_ID=$SA_ID"
 
       - name: Ensure API Gateway exists (with SA, idempotent, backoff)
         id: gw
+        shell: bash
         env:
           APIGW_NAME: ${{ secrets.APIGW_NAME }}
         run: |
@@ -150,20 +170,23 @@ jobs:
             done
           fi
           GW_URL=$(yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .domain)
-          echo "url=https://${GW_URL}" >> $GITHUB_OUTPUT
+          echo "url=https://${GW_URL}" >> "$GITHUB_OUTPUT"
           echo "GW_URL=https://${GW_URL}"
 
-      # ---------- Frontend ----------
+      # -------- Frontend: инжект URL и заливка в S3 --------
       - name: Inject API base URL into web/app.js
+        shell: bash
         run: |
           API_BASE="${{ steps.gw.outputs.url }}"
           sed -i "s|%%API_BASE%%|$API_BASE|g" web/app.js
           echo "API_BASE set to $API_BASE"
 
       - name: Install AWS CLI
+        shell: bash
         run: |
           pip install --upgrade --user awscli
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/aws" --version || true
 
       - name: Configure AWS credentials (Yandex S3)
         uses: aws-actions/configure-aws-credentials@v4
@@ -173,10 +196,12 @@ jobs:
           aws-region: 'ru-central1'
 
       - name: Upload web to Object Storage
+        shell: bash
         run: |
           aws --endpoint-url "${S3_ENDPOINT}" s3 sync ./web "s3://${WEB_BUCKET}" --delete
 
       - name: Summary
+        shell: bash
         run: |
           echo "Frontend URL: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
           echo "API Base URL : ${{ steps.gw.outputs.url }}"
