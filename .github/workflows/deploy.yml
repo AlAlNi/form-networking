@@ -79,20 +79,6 @@ jobs:
         run: |
           yc resource-manager folder get "$YC_FOLDER_ID" >/dev/null
 
-      - name: Extract service account id
-        id: sa
-        env:
-          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
-        run: |
-          set -euo pipefail
-          SA_ID=$(echo "$YC_SA_JSON" | jq -r '.service_account_id')
-          if [ -z "$SA_ID" ] || [ "$SA_ID" = "null" ]; then
-            echo "Unable to extract service_account_id from YC_SA_JSON" >&2
-            exit 1
-          fi
-          echo "Using service account: $SA_ID"
-          echo "id=$SA_ID" >> "$GITHUB_OUTPUT"
-
       # ---------- Backend: Function ----------
       - uses: actions/setup-node@v4
         with:
@@ -132,22 +118,6 @@ jobs:
           FN_ID=$(retry yc serverless function get "${FOLDER_ARGS[@]}" --name "$FN_NAME" --format json | jq -r .id)
           echo "id=$FN_ID" >> $GITHUB_OUTPUT
 
-      - name: Ensure service account can invoke function
-        run: |
-          set -euo pipefail
-          retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
-          FN_ID="${{ steps.fn.outputs.id }}"
-          SA_ID="${{ steps.sa.outputs.id }}"
-          SUBJECT="serviceAccount:${SA_ID}"
-          ROLE="serverless.functions.invoker"
-          BINDINGS=$(retry yc serverless function list-access-bindings --id "$FN_ID" --format json)
-          if ! echo "$BINDINGS" | jq -e --arg subject "$SUBJECT" --arg role "$ROLE" 'any(.bindings[]?; .role == $role and .subject == $subject)' >/dev/null; then
-            echo "Adding access binding for $SUBJECT"
-            retry yc serverless function add-access-binding --id "$FN_ID" --role "$ROLE" --subject "$SUBJECT"
-          else
-            echo "Access binding for $SUBJECT already exists"
-          fi
-
       - name: Deploy function version
         run: |
           set -e
@@ -172,23 +142,14 @@ jobs:
 
       - name: Wait function ACTIVE
         run: |
-          set -euo pipefail
-          FN_ID=${{ steps.fn.outputs.id }}
-          for i in {1..20}; do
-            STATUS=""
-            if VERSIONS_JSON=$(yc serverless function version list --function-id "$FN_ID" --format json 2>/dev/null); then
-              STATUS=$(echo "$VERSIONS_JSON" | jq -r '.[-1].status' 2>/dev/null || true)
-            fi
-            if [ -z "$STATUS" ]; then
-              STATUS="unknown"
-            fi
-            echo "Attempt $i: function version status=$STATUS"
-            if [ "$STATUS" = "ACTIVE" ]; then
+          for i in {1..40}; do
+            st=$(yc serverless function version list --function-id ${{ steps.fn.outputs.id }} --folder-id $YC_FOLDER_ID --format json | jq -r '.[-1].status' 2>/dev/null || true)
+            if [ "$st" = "ACTIVE" ]; then
               exit 0
             fi
             sleep 3
           done
-          echo "Function version not ACTIVE" >&2
+          echo "Function version not ACTIVE"
           exit 1
 
       # ---------- API Gateway ----------
@@ -208,57 +169,63 @@ jobs:
           echo "Prepared API Gateway spec:"
           cat apigw.yaml
 
-      - name: Ensure API Gateway exists (idempotent with backoff)
+      - name: Validate API Gateway secrets
+        run: |
+          test -n "${{ secrets.APIGW_NAME }}" || (echo "APIGW_NAME is empty" && exit 1)
+          test -n "${{ secrets.YC_FOLDER_ID }}" || (echo "YC_FOLDER_ID is empty" && exit 1)
+
+      - name: Resolve SA_ID and print apigw spec
+        id: sa
+        run: |
+          SA_ID=$(yc iam service-account get --name form-networking-sa --format json | jq -r .id)
+          echo "id=$SA_ID" >> $GITHUB_OUTPUT
+          echo "== apigw.yaml ==" && cat apigw.yaml
+
+      - name: Ensure service account can invoke function
+        run: |
+          set -euo pipefail
+          retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
+          FN_ID="${{ steps.fn.outputs.id }}"
+          SA_ID="${{ steps.sa.outputs.id }}"
+          SUBJECT="serviceAccount:${SA_ID}"
+          ROLE="serverless.functions.invoker"
+          BINDINGS=$(retry yc serverless function list-access-bindings --id "$FN_ID" --format json)
+          if ! echo "$BINDINGS" | jq -e --arg subject "$SUBJECT" --arg role "$ROLE" 'any(.bindings[]?; .role == $role and .subject == $subject)' >/dev/null; then
+            echo "Adding access binding for $SUBJECT"
+            retry yc serverless function add-access-binding --id "$FN_ID" --role "$ROLE" --subject "$SUBJECT"
+          else
+            echo "Access binding for $SUBJECT already exists"
+          fi
+
+      - name: Ensure API Gateway exists (with SA and backoff)
         id: gw
         env:
           APIGW_NAME: ${{ secrets.APIGW_NAME }}
         run: |
-          set -euo pipefail
-
-          if [ -z "${YC_FOLDER_ID:-}" ]; then
-            echo "YC_FOLDER_ID is not set" >&2
-            exit 1
-          fi
-
-          retry_with_backoff() {
-            local attempt=1
-            while [ $attempt -le 5 ]; do
-              if "$@"; then
-                return 0
-              fi
-              sleep $((attempt * 3))
-              attempt=$((attempt + 1))
+          set -e
+          yc serverless api-gateway get --name "$APIGW_NAME" --folder-id $YC_FOLDER_ID >/dev/null 2>&1 && EXISTS=1 || EXISTS=0
+          if [ "$EXISTS" = "1" ]; then
+            for i in 1 2 3 4 5; do
+              yc --debug serverless api-gateway update \
+                --name "$APIGW_NAME" \
+                --folder-id $YC_FOLDER_ID \
+                --service-account-id ${{ steps.sa.outputs.id }} \
+                --spec=apigw.yaml && break
+              sleep $((i*3))
             done
-            return 1
-          }
-
-          FOLDER_ARGS=(--folder-id "$YC_FOLDER_ID")
-
-          if yc serverless api-gateway get "${FOLDER_ARGS[@]}" --name "$APIGW_NAME" >/dev/null 2>&1; then
-            echo "Updating API Gateway '$APIGW_NAME'"
-            retry_with_backoff yc serverless api-gateway update "${FOLDER_ARGS[@]}" --name "$APIGW_NAME" --spec=apigw.yaml
           else
-            echo "Creating API Gateway '$APIGW_NAME'"
-            retry_with_backoff yc serverless api-gateway create "${FOLDER_ARGS[@]}" --name "$APIGW_NAME" --spec=apigw.yaml
+            for i in 1 2 3 4 5; do
+              yc --debug serverless api-gateway create \
+                --name "$APIGW_NAME" \
+                --folder-id $YC_FOLDER_ID \
+                --service-account-id ${{ steps.sa.outputs.id }} \
+                --spec=apigw.yaml && break
+              sleep $((i*3))
+            done
           fi
-
-          GW_DOMAIN=""
-          for attempt in 1 2 3 4 5; do
-            if GW_JSON=$(yc serverless api-gateway get "${FOLDER_ARGS[@]}" --name "$APIGW_NAME" --format json); then
-              GW_DOMAIN=$(echo "$GW_JSON" | jq -r '.domain')
-              if [ -n "$GW_DOMAIN" ] && [ "$GW_DOMAIN" != "null" ]; then
-                break
-              fi
-            fi
-            if [ "$attempt" -eq 5 ]; then
-              echo "Failed to fetch API Gateway domain" >&2
-              exit 1
-            fi
-            sleep $((attempt * 3))
-          done
-
-          echo "API Gateway domain: https://$GW_DOMAIN"
-          echo "url=https://$GW_DOMAIN" >> "$GITHUB_OUTPUT"
+          GW_URL=$(yc serverless api-gateway get --name "$APIGW_NAME" --folder-id $YC_FOLDER_ID --format json | jq -r .domain)
+          echo "url=https://${GW_URL}" >> $GITHUB_OUTPUT
+          echo "API Gateway domain: https://${GW_URL}"
 
       # ---------- Frontend: inject API URL & upload ----------
       - name: Inject API base URL into web/app.js
