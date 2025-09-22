@@ -20,6 +20,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate required secrets
+        run: |
+          test -n "${{ secrets.YC_FOLDER_ID }}"  || (echo "YC_FOLDER_ID is empty" && exit 1)
+          test -n "${{ secrets.YC_CLOUD_ID }}"   || (echo "YC_CLOUD_ID is empty" && exit 1)
+          test -n "${{ secrets.APIGW_NAME }}"    || (echo "APIGW_NAME is empty" && exit 1)
+          test -n "${{ secrets.WEB_BUCKET }}"    || (echo "WEB_BUCKET is empty" && exit 1)
+          test -n "${{ secrets.S3_ACCESS_KEY_ID }}"     || (echo "S3_ACCESS_KEY_ID is empty" && exit 1)
+          test -n "${{ secrets.S3_SECRET_ACCESS_KEY }}" || (echo "S3_SECRET_ACCESS_KEY is empty" && exit 1)
+          test -n "${{ secrets.YC_SA_JSON }}"    || (echo "YC_SA_JSON is empty" && exit 1)
+
+      - name: Echo env
+        run: |
+          echo "APIGW_NAME=${{ secrets.APIGW_NAME }}"
+          echo "WEB_BUCKET=${{ secrets.WEB_BUCKET }}"
+
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
@@ -130,6 +145,27 @@ jobs:
             --role serverless.functions.invoker \
             --subject allUsers || true
 
+      - name: Wait function ACTIVE
+        run: |
+          set -euo pipefail
+          FN_ID=${{ steps.fn.outputs.id }}
+          for i in {1..20}; do
+            STATUS=""
+            if VERSIONS_JSON=$(yc serverless function version list --function-id "$FN_ID" --format json 2>/dev/null); then
+              STATUS=$(echo "$VERSIONS_JSON" | jq -r '.[-1].status' 2>/dev/null || true)
+            fi
+            if [ -z "$STATUS" ]; then
+              STATUS="unknown"
+            fi
+            echo "Attempt $i: function version status=$STATUS"
+            if [ "$STATUS" = "ACTIVE" ]; then
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Function version not ACTIVE" >&2
+          exit 1
+
       # ---------- API Gateway ----------
       - name: Prepare OpenAPI with function id
         run: |
@@ -147,20 +183,50 @@ jobs:
           echo "Prepared API Gateway spec:"
           cat apigw.yaml
 
-      - name: Ensure API Gateway exists
+      - name: Ensure API Gateway exists (idempotent with backoff)
         id: gw
+        env:
+          APIGW_NAME: ${{ secrets.APIGW_NAME }}
         run: |
-          set -e
-          retry() { local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
+          set -euo pipefail
 
-          if retry yc serverless api-gateway get --name "$APIGW_NAME" >/dev/null 2>&1; then
-            retry yc serverless api-gateway update --name "$APIGW_NAME" --spec=apigw.yaml
+          retry_with_backoff() {
+            local attempt=1
+            while [ $attempt -le 5 ]; do
+              if "$@"; then
+                return 0
+              fi
+              sleep $((attempt * 3))
+              attempt=$((attempt + 1))
+            done
+            return 1
+          }
+
+          if yc serverless api-gateway get --name "$APIGW_NAME" >/dev/null 2>&1; then
+            echo "Updating API Gateway '$APIGW_NAME'"
+            retry_with_backoff yc serverless api-gateway update --name "$APIGW_NAME" --spec=apigw.yaml
           else
-            retry yc serverless api-gateway create --name "$APIGW_NAME" --spec=apigw.yaml
+            echo "Creating API Gateway '$APIGW_NAME'"
+            retry_with_backoff yc serverless api-gateway create --name "$APIGW_NAME" --spec=apigw.yaml
           fi
 
-          GW_URL=$(retry yc serverless api-gateway get --name "$APIGW_NAME" --format json | jq -r '.domain')
-          echo "url=https://$GW_URL" >> $GITHUB_OUTPUT
+          GW_DOMAIN=""
+          for attempt in 1 2 3 4 5; do
+            if GW_JSON=$(yc serverless api-gateway get --name "$APIGW_NAME" --format json); then
+              GW_DOMAIN=$(echo "$GW_JSON" | jq -r '.domain')
+              if [ -n "$GW_DOMAIN" ] && [ "$GW_DOMAIN" != "null" ]; then
+                break
+              fi
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "Failed to fetch API Gateway domain" >&2
+              exit 1
+            fi
+            sleep $((attempt * 3))
+          done
+
+          echo "API Gateway domain: https://$GW_DOMAIN"
+          echo "url=https://$GW_DOMAIN" >> "$GITHUB_OUTPUT"
 
       # ---------- Frontend: inject API URL & upload ----------
       - name: Inject API base URL into web/app.js
@@ -197,4 +263,12 @@ jobs:
         with:
           name: yc-cli-log
           path: ~/.config/yandex-cloud/logs/cli.log
+          if-no-files-found: ignore
+
+      - name: Upload YC trace logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yc-traces
+          path: /home/runner/.config/yandex-cloud/logs/*.txt
           if-no-files-found: ignore
