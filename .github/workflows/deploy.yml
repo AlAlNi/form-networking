@@ -30,6 +30,10 @@ jobs:
           echo "$HOME/yandex-cloud/bin" >> $GITHUB_PATH
           $HOME/yandex-cloud/bin/yc version
 
+      - name: Preflight YC API
+        run: |
+          curl -sSf https://api.cloud.yandex.net/ || (echo "YC API not reachable" && exit 1)
+
       - name: YC auth
         env:
           YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
@@ -38,13 +42,21 @@ jobs:
           yc config set service-account-key key.json
           yc config set folder-id $YC_FOLDER_ID
           yc config set cloud-id  $YC_CLOUD_ID
-          yc config set endpoint api.cloud.yandex.net
           rm -f key.json
 
       # ---------- Backend: Function ----------
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
       - name: Install server deps
         working-directory: server
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
 
       - name: Zip server
         run: |
@@ -55,19 +67,22 @@ jobs:
         id: fn
         run: |
           set -e
+          retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
           FN_NAME="form-networking-fn"
-          if yc serverless function get --name "$FN_NAME" >/dev/null 2>&1; then
+          if retry yc serverless function get --name "$FN_NAME" >/dev/null 2>&1; then
             echo "exists=1" >> $GITHUB_OUTPUT
           else
-            yc serverless function create --name "$FN_NAME"
+            retry yc serverless function create --name "$FN_NAME"
             echo "exists=0" >> $GITHUB_OUTPUT
           fi
-          FN_ID=$(yc serverless function get --name "$FN_NAME" --format json | jq -r .id)
+          FN_ID=$(retry yc serverless function get --name "$FN_NAME" --format json | jq -r .id)
           echo "id=$FN_ID" >> $GITHUB_OUTPUT
 
       - name: Deploy function version
         run: |
-          yc serverless function version create \
+          set -e
+          retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
+          retry yc serverless function version create \
             --function-id  ${{ steps.fn.outputs.id }} \
             --runtime nodejs18 \
             --entrypoint index.handler \
@@ -86,12 +101,14 @@ jobs:
         id: gw
         run: |
           set -e
-          if yc serverless api-gateway get --name "$APIGW_NAME" >/dev/null 2>&1; then
-            yc serverless api-gateway update --name "$APIGW_NAME" --spec=apigw.yaml
+          retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
+          if retry yc serverless api-gateway get --name "$APIGW_NAME" >/dev/null 2>&1; then
+            retry yc serverless api-gateway update --name "$APIGW_NAME" --spec=apigw.yaml
           else
-            yc serverless api-gateway create --name "$APIGW_NAME" --spec=apigw.yaml
+            retry yc serverless api-gateway create --name "$APIGW_NAME" --spec=apigw.yaml
           fi
-          GW_URL=$(yc serverless api-gateway get --name "$APIGW_NAME" --format json | jq -r .domain)
+          GW_JSON=$(retry yc serverless api-gateway get --name "$APIGW_NAME" --format json)
+          GW_URL=$(echo "$GW_JSON" | jq -r .domain)
           echo "url=https://${GW_URL}" >> $GITHUB_OUTPUT
 
       # ---------- Frontend: inject API URL & upload ----------
