@@ -1,9 +1,10 @@
 ﻿{
   "name": "form-networking-server",
+  "version": "1.0.0",
   "type": "module",
   "main": "index.js",
   "dependencies": {
-    "express": "^4.19.2",
-    "serverless-http": "^3.2.0"
+    "@yandex-cloud/function-express": "^1.0.1",
+    "express": "^4.19.2"
   }
 }
