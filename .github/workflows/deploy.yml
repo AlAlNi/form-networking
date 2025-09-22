@@ -21,14 +21,34 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate required secrets
+        env:
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+          APIGW_NAME: ${{ secrets.APIGW_NAME }}
+          WEB_BUCKET: ${{ secrets.WEB_BUCKET }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
+        shell: bash
         run: |
-          test -n "${{ secrets.YC_FOLDER_ID }}"  || (echo "YC_FOLDER_ID is empty" && exit 1)
-          test -n "${{ secrets.YC_CLOUD_ID }}"   || (echo "YC_CLOUD_ID is empty" && exit 1)
-          test -n "${{ secrets.APIGW_NAME }}"    || (echo "APIGW_NAME is empty" && exit 1)
-          test -n "${{ secrets.WEB_BUCKET }}"    || (echo "WEB_BUCKET is empty" && exit 1)
-          test -n "${{ secrets.S3_ACCESS_KEY_ID }}"     || (echo "S3_ACCESS_KEY_ID is empty" && exit 1)
-          test -n "${{ secrets.S3_SECRET_ACCESS_KEY }}" || (echo "S3_SECRET_ACCESS_KEY is empty" && exit 1)
-          test -n "${{ secrets.YC_SA_JSON }}"    || (echo "YC_SA_JSON is empty" && exit 1)
+          set -eo pipefail
+
+          required_secrets=(
+            YC_FOLDER_ID
+            YC_CLOUD_ID
+            APIGW_NAME
+            WEB_BUCKET
+            S3_ACCESS_KEY_ID
+            S3_SECRET_ACCESS_KEY
+            YC_SA_JSON
+          )
+
+          for secret in "${required_secrets[@]}"; do
+            if [ -z "${!secret:-}" ]; then
+              echo "$secret is empty"
+              exit 1
+            fi
+          done
 
       - name: Echo env
         run: |
