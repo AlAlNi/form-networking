@@ -1,5 +1,4 @@
 name: Deploy to Yandex Cloud
-
 on:
   push:
     branches: [ main ]
@@ -7,7 +6,6 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     env:
       YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
       YC_CLOUD_ID:  ${{ secrets.YC_CLOUD_ID }}
@@ -20,50 +18,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate required secrets
-        env:
-          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
-          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
-          APIGW_NAME: ${{ secrets.APIGW_NAME }}
-          WEB_BUCKET: ${{ secrets.WEB_BUCKET }}
-          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
-          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
-          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
-        shell: bash
+      - name: Validate required secrets (fail fast)
         run: |
-          set -eo pipefail
-
-          required_secrets=(
-            YC_FOLDER_ID
-            YC_CLOUD_ID
-            APIGW_NAME
-            WEB_BUCKET
-            S3_ACCESS_KEY_ID
-            S3_SECRET_ACCESS_KEY
-            YC_SA_JSON
-          )
-
-          for secret in "${required_secrets[@]}"; do
-            if [ -z "${!secret:-}" ]; then
-              echo "$secret is empty"
-              exit 1
-            fi
-          done
-
-      - name: Echo env
-        run: |
-          echo "APIGW_NAME=${{ secrets.APIGW_NAME }}"
-          echo "WEB_BUCKET=${{ secrets.WEB_BUCKET }}"
+          test -n "${{ secrets.YC_SA_JSON }}" || (echo "YC_SA_JSON is empty" && exit 1)
+          test -n "${YC_FOLDER_ID}"           || (echo "YC_FOLDER_ID is empty" && exit 1)
+          test -n "${YC_CLOUD_ID}"            || (echo "YC_CLOUD_ID is empty" && exit 1)
+          test -n "${APIGW_NAME}"             || (echo "APIGW_NAME is empty" && exit 1)
+          test -n "${WEB_BUCKET}"             || (echo "WEB_BUCKET is empty" && exit 1)
+          test -n "${{ secrets.S3_ACCESS_KEY_ID }}"     || (echo "S3_ACCESS_KEY_ID is empty" && exit 1)
+          test -n "${{ secrets.S3_SECRET_ACCESS_KEY }}" || (echo "S3_SECRET_ACCESS_KEY is empty" && exit 1)
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      # ---------- Install YC CLI (без внешних GitHub Actions) ----------
       - name: Install YC CLI
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i $HOME/yandex-cloud -n
           echo "$HOME/yandex-cloud/bin" >> $GITHUB_PATH
-          $HOME/yandex-cloud/bin/yc version
+          yc version
 
       - name: YC auth
         env:
@@ -71,27 +43,14 @@ jobs:
         run: |
           echo "$YC_SA_JSON" > key.json
           yc config set service-account-key key.json
-          yc config set folder-id $YC_FOLDER_ID
-          yc config set cloud-id  $YC_CLOUD_ID
-          rm -f key.json
+          yc config set cloud-id  "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+          yc config set endpoint api.cloud.yandex.net
 
-      - name: Verify YC folder access
-        run: |
-          yc resource-manager folder get "$YC_FOLDER_ID" >/dev/null
-
-      # ---------- Backend: Function ----------
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
+      # ---------- Backend ----------
       - name: Install server deps
         working-directory: server
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install --no-audit --no-fund
-          fi
+        run: npm ci
 
       - name: Zip server
         run: |
@@ -102,28 +61,21 @@ jobs:
         id: fn
         run: |
           set -e
-          if [ -z "${YC_FOLDER_ID:-}" ]; then
-            echo "YC_FOLDER_ID is not set" >&2
-            exit 1
-          fi
-          retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
           FN_NAME="form-networking-fn"
-          FOLDER_ARGS=(--folder-id "$YC_FOLDER_ID")
-          if retry yc serverless function get "${FOLDER_ARGS[@]}" --name "$FN_NAME" >/dev/null 2>&1; then
+          if yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
             echo "exists=1" >> $GITHUB_OUTPUT
           else
-            retry yc serverless function create "${FOLDER_ARGS[@]}" --name "$FN_NAME"
+            yc serverless function create --name "$FN_NAME" --folder-id "$YC_FOLDER_ID"
             echo "exists=0" >> $GITHUB_OUTPUT
           fi
-          FN_ID=$(retry yc serverless function get "${FOLDER_ARGS[@]}" --name "$FN_NAME" --format json | jq -r .id)
+          FN_ID=$(yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .id)
           echo "id=$FN_ID" >> $GITHUB_OUTPUT
+          echo "FN_ID=$FN_ID"
 
       - name: Deploy function version
         run: |
-          set -e
-          retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
-          retry yc serverless function version create \
-            --function-id  ${{ steps.fn.outputs.id }} \
+          yc serverless function version create \
+            --function-id  "${{ steps.fn.outputs.id }}" \
             --runtime nodejs18 \
             --entrypoint index.handler \
             --memory 128m \
@@ -131,107 +83,72 @@ jobs:
             --environment BOT_TOKEN=${BOT_TOKEN},DEMO=1 \
             --source-path server.zip
 
-      - name: Make function invokable (public for demo)
-        run: |
-          FN_ID=${{ steps.fn.outputs.id }}
-          # дать публичный инвокер, чтобы API GW мог вызывать без SA
-          yc serverless function add-access-binding \
-            --id "$FN_ID" \
-            --role serverless.functions.invoker \
-            --subject allUsers || true
-
       - name: Wait function ACTIVE
         run: |
           for i in {1..40}; do
-            st=$(yc serverless function version list --function-id ${{ steps.fn.outputs.id }} --folder-id $YC_FOLDER_ID --format json | jq -r '.[-1].status' 2>/dev/null || true)
-            if [ "$st" = "ACTIVE" ]; then
-              exit 0
-            fi
+            st=$(yc serverless function version list --function-id "${{ steps.fn.outputs.id }}" --folder-id "$YC_FOLDER_ID" --format json | jq -r '.[-1].status')
+            [ "$st" = "ACTIVE" ] && exit 0
             sleep 3
           done
-          echo "Function version not ACTIVE"
-          exit 1
+          echo "Function version not ACTIVE"; exit 1
 
       # ---------- API Gateway ----------
       - name: Prepare OpenAPI with function id
         run: |
-          set -euo pipefail
           cp infra/apigw-openapi.yaml apigw.yaml
           sed -i "s|\${FUNCTION_ID}|${{ steps.fn.outputs.id }}|g" apigw.yaml
-          if grep -q '\${FUNCTION_ID}' apigw.yaml; then
-            echo "FUNCTION_ID placeholder was not replaced" >&2
-            exit 1
-          fi
-          if grep -Eq 'function_id:[[:space:]]*$' apigw.yaml; then
-            echo "function_id is empty in apigw.yaml" >&2
-            exit 1
-          fi
-          echo "Prepared API Gateway spec:"
-          cat apigw.yaml
-
-      - name: Validate API Gateway secrets
-        run: |
-          test -n "${{ secrets.APIGW_NAME }}" || (echo "APIGW_NAME is empty" && exit 1)
-          test -n "${{ secrets.YC_FOLDER_ID }}" || (echo "YC_FOLDER_ID is empty" && exit 1)
-
-      - name: Resolve SA_ID and print apigw spec
-        id: sa
-        run: |
-          SA_ID=$(yc iam service-account get --name form-networking-sa --format json | jq -r .id)
-          echo "id=$SA_ID" >> $GITHUB_OUTPUT
           echo "== apigw.yaml ==" && cat apigw.yaml
 
-      - name: Ensure service account can invoke function
+      - name: Resolve SA_ID (no jq on bindings)
+        id: sa
         run: |
-          set -euo pipefail
-          retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
-          FN_ID="${{ steps.fn.outputs.id }}"
-          SA_ID="${{ steps.sa.outputs.id }}"
-          SUBJECT="serviceAccount:${SA_ID}"
-          ROLE="serverless.functions.invoker"
-          BINDINGS=$(retry yc serverless function list-access-bindings --id "$FN_ID" --format json)
-          if ! echo "$BINDINGS" | jq -e --arg subject "$SUBJECT" --arg role "$ROLE" 'any(.bindings[]?; .role == $role and .subject == $subject)' >/dev/null; then
-            echo "Adding access binding for $SUBJECT"
-            retry yc serverless function add-access-binding --id "$FN_ID" --role "$ROLE" --subject "$SUBJECT"
-          else
-            echo "Access binding for $SUBJECT already exists"
+          set -e
+          SA_NAME="form-networking-sa"
+          yc iam service-account get --name "$SA_NAME" --format json > sa.json
+          SA_ID=$(jq -r '.id' sa.json)
+          if [ -z "$SA_ID" ] || [ "$SA_ID" = "null" ]; then
+            echo "Failed to resolve SA_ID"; cat sa.json; exit 1
           fi
+          echo "id=$SA_ID" >> $GITHUB_OUTPUT
+          echo "SA_ID=$SA_ID"
 
-      - name: Ensure API Gateway exists (with SA and backoff)
+      - name: Ensure API Gateway exists (idempotent, with SA)
         id: gw
         env:
           APIGW_NAME: ${{ secrets.APIGW_NAME }}
         run: |
           set -e
-          yc serverless api-gateway get --name "$APIGW_NAME" --folder-id $YC_FOLDER_ID >/dev/null 2>&1 && EXISTS=1 || EXISTS=0
-          if [ "$EXISTS" = "1" ]; then
+          if yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
+            echo "Updating API GW: $APIGW_NAME"
             for i in 1 2 3 4 5; do
               yc --debug serverless api-gateway update \
                 --name "$APIGW_NAME" \
-                --folder-id $YC_FOLDER_ID \
-                --service-account-id ${{ steps.sa.outputs.id }} \
+                --folder-id "$YC_FOLDER_ID" \
+                --service-account-id "${{ steps.sa.outputs.id }}" \
                 --spec=apigw.yaml && break
               sleep $((i*3))
             done
           else
+            echo "Creating API GW: $APIGW_NAME"
             for i in 1 2 3 4 5; do
               yc --debug serverless api-gateway create \
                 --name "$APIGW_NAME" \
-                --folder-id $YC_FOLDER_ID \
-                --service-account-id ${{ steps.sa.outputs.id }} \
+                --folder-id "$YC_FOLDER_ID" \
+                --service-account-id "${{ steps.sa.outputs.id }}" \
                 --spec=apigw.yaml && break
               sleep $((i*3))
             done
           fi
-          GW_URL=$(yc serverless api-gateway get --name "$APIGW_NAME" --folder-id $YC_FOLDER_ID --format json | jq -r .domain)
+          GW_URL=$(yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .domain)
           echo "url=https://${GW_URL}" >> $GITHUB_OUTPUT
-          echo "API Gateway domain: https://${GW_URL}"
+          echo "GW_URL=https://${GW_URL}"
 
-      # ---------- Frontend: inject API URL & upload ----------
+      # ---------- Frontend ----------
       - name: Inject API base URL into web/app.js
         run: |
           API_BASE="${{ steps.gw.outputs.url }}"
           sed -i "s|%%API_BASE%%|$API_BASE|g" web/app.js
+          echo "API_BASE set to $API_BASE"
 
       - name: Install AWS CLI
         run: |
@@ -247,27 +164,16 @@ jobs:
 
       - name: Upload web to Object Storage
         run: |
-          aws --endpoint-url ${S3_ENDPOINT} s3 sync ./web s3://${WEB_BUCKET} --delete
+          aws --endpoint-url "${S3_ENDPOINT}" s3 sync ./web s3://${WEB_BUCKET} --delete
 
       - name: Summary
         run: |
-          {
-            echo "Frontend URL: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
-            echo "API Base URL : ${{ steps.gw.outputs.url }}"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Frontend URL: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
+          echo "API Base URL : ${{ steps.gw.outputs.url }}"
 
-      - name: Upload YC CLI log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: yc-cli-log
-          path: ~/.config/yandex-cloud/logs/cli.log
-          if-no-files-found: ignore
-
-      - name: Upload YC trace logs
+      - name: Upload YC trace logs (if failed)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: yc-traces
           path: /home/runner/.config/yandex-cloud/logs/*.txt
-          if-no-files-found: ignore
