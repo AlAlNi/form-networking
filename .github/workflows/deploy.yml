@@ -116,15 +116,20 @@ jobs:
         id: fn
         run: |
           set -e
+          if [ -z "${YC_FOLDER_ID:-}" ]; then
+            echo "YC_FOLDER_ID is not set" >&2
+            exit 1
+          fi
           retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
           FN_NAME="form-networking-fn"
-          if retry yc serverless function get --name "$FN_NAME" >/dev/null 2>&1; then
+          FOLDER_ARGS=(--folder-id "$YC_FOLDER_ID")
+          if retry yc serverless function get "${FOLDER_ARGS[@]}" --name "$FN_NAME" >/dev/null 2>&1; then
             echo "exists=1" >> $GITHUB_OUTPUT
           else
-            retry yc serverless function create --name "$FN_NAME"
+            retry yc serverless function create "${FOLDER_ARGS[@]}" --name "$FN_NAME"
             echo "exists=0" >> $GITHUB_OUTPUT
           fi
-          FN_ID=$(retry yc serverless function get --name "$FN_NAME" --format json | jq -r .id)
+          FN_ID=$(retry yc serverless function get "${FOLDER_ARGS[@]}" --name "$FN_NAME" --format json | jq -r .id)
           echo "id=$FN_ID" >> $GITHUB_OUTPUT
 
       - name: Ensure service account can invoke function
@@ -210,6 +215,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ -z "${YC_FOLDER_ID:-}" ]; then
+            echo "YC_FOLDER_ID is not set" >&2
+            exit 1
+          fi
+
           retry_with_backoff() {
             local attempt=1
             while [ $attempt -le 5 ]; do
@@ -222,17 +232,19 @@ jobs:
             return 1
           }
 
-          if yc serverless api-gateway get --name "$APIGW_NAME" >/dev/null 2>&1; then
+          FOLDER_ARGS=(--folder-id "$YC_FOLDER_ID")
+
+          if yc serverless api-gateway get "${FOLDER_ARGS[@]}" --name "$APIGW_NAME" >/dev/null 2>&1; then
             echo "Updating API Gateway '$APIGW_NAME'"
-            retry_with_backoff yc serverless api-gateway update --name "$APIGW_NAME" --spec=apigw.yaml
+            retry_with_backoff yc serverless api-gateway update "${FOLDER_ARGS[@]}" --name "$APIGW_NAME" --spec=apigw.yaml
           else
             echo "Creating API Gateway '$APIGW_NAME'"
-            retry_with_backoff yc serverless api-gateway create --name "$APIGW_NAME" --spec=apigw.yaml
+            retry_with_backoff yc serverless api-gateway create "${FOLDER_ARGS[@]}" --name "$APIGW_NAME" --spec=apigw.yaml
           fi
 
           GW_DOMAIN=""
           for attempt in 1 2 3 4 5; do
-            if GW_JSON=$(yc serverless api-gateway get --name "$APIGW_NAME" --format json); then
+            if GW_JSON=$(yc serverless api-gateway get "${FOLDER_ARGS[@]}" --name "$APIGW_NAME" --format json); then
               GW_DOMAIN=$(echo "$GW_JSON" | jq -r '.domain')
               if [ -n "$GW_DOMAIN" ] && [ "$GW_DOMAIN" != "null" ]; then
                 break
