@@ -30,10 +30,6 @@ jobs:
           echo "$HOME/yandex-cloud/bin" >> $GITHUB_PATH
           $HOME/yandex-cloud/bin/yc version
 
-      - name: Preflight YC API
-        run: |
-          curl -sSf https://api.cloud.yandex.net/ || (echo "YC API not reachable" && exit 1)
-
       - name: YC auth
         env:
           YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
@@ -43,6 +39,10 @@ jobs:
           yc config set folder-id $YC_FOLDER_ID
           yc config set cloud-id  $YC_CLOUD_ID
           rm -f key.json
+
+      - name: Verify YC folder access
+        run: |
+          yc resource-manager folder get "$YC_FOLDER_ID" >/dev/null
 
       # ---------- Backend: Function ----------
       - uses: actions/setup-node@v4
