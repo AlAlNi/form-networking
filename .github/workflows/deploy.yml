@@ -15,13 +15,12 @@ jobs:
       S3_ENDPOINT:  ${{ secrets.S3_ENDPOINT }}
       BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
       APIGW_NAME:   ${{ secrets.APIGW_NAME }}
-      FN_NAME:      form-networking-fn
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- Backend pack ----------
+      # ------------ Backend: package ------------
       - name: Install server deps
         working-directory: server
         run: npm ci
@@ -31,78 +30,100 @@ jobs:
           cd server
           zip -r ../server.zip .
 
-      # ---------- Install yc properly ----------
+      # ------------ Install yc CLI (без экшенов), jq ------------
       - name: Install yc CLI
-        uses: yc-actions/yc-install@v1
-        with:
-          version: "0.166.0"   # актуальная
+        shell: bash
+        run: |
+          set -e
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
+          echo "$HOME/yandex-cloud/bin" >> $GITHUB_PATH
+          echo "YC=/home/runner/yandex-cloud/bin/yc" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y jq
+          $HOME/yandex-cloud/bin/yc --version
 
-      - name: Auth yc
+      # ------------ Auth ------------
+      - name: YC auth
+        shell: bash
         env:
           YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
         run: |
+          set -e
           echo "$YC_SA_JSON" > key.json
-          yc config set service-account-key key.json
-          yc config set folder-id "$YC_FOLDER_ID"
-          yc config set cloud-id  "$YC_CLOUD_ID"
+          $YC config set service-account-key key.json
+          $YC config set folder-id "$YC_FOLDER_ID"
+          $YC config set cloud-id  "$YC_CLOUD_ID"
+          $YC config set endpoint api.cloud.yandex.net
+          $YC iam list-operations --limit 1 >/dev/null 2>&1 || true
 
-      # ---------- Ensure function exists ----------
-      - name: Ensure function
+      # ------------ Ensure function & deploy version ------------
+      - name: Ensure function exists
         id: fn
         shell: bash
         run: |
-          set -euo pipefail
-          if yc serverless function get --name "$FN_NAME" >/dev/null 2>&1; then
+          set -e
+          FN_NAME="form-networking-fn"
+          if $YC serverless function get --name "$FN_NAME" >/dev/null 2>&1; then
             echo "exists=1" >> $GITHUB_OUTPUT
           else
-            yc serverless function create --name "$FN_NAME"
+            $YC serverless function create --name "$FN_NAME"
             echo "exists=0" >> $GITHUB_OUTPUT
           fi
-          FN_ID="$(yc serverless function get --name "$FN_NAME" --format json | jq -r .id)"
+          FN_ID=$($YC serverless function get --name "$FN_NAME" --format json | jq -r .id)
           echo "id=$FN_ID" >> $GITHUB_OUTPUT
 
       - name: Deploy function version
+        shell: bash
         run: |
-          yc serverless function version create \
+          set -e
+          $YC serverless function version create \
             --function-id  "${{ steps.fn.outputs.id }}" \
             --runtime nodejs18 \
             --entrypoint index.handler \
             --memory 128m \
             --execution-timeout 5s \
-            --environment BOT_TOKEN=${BOT_TOKEN},DEMO=1 \
+            --environment BOT_TOKEN="${BOT_TOKEN}",DEMO=1 \
             --source-path server.zip
 
-      # ---------- API Gateway ----------
-      - name: Prepare OpenAPI
+      # ------------ API Gateway ------------
+      - name: Prepare OpenAPI with function id
+        shell: bash
         run: |
+          set -e
           cp infra/apigw-openapi.yaml apigw.yaml
-          sed -i -e "s|\${FUNCTION_ID}|${{ steps.fn.outputs.id }}|g" apigw.yaml
+          sed -i "s|\${FUNCTION_ID}|${{ steps.fn.outputs.id }}|g" apigw.yaml
 
-      - name: Create/Update API Gateway
+      - name: Ensure API Gateway exists
         id: gw
+        shell: bash
         run: |
-          set -euo pipefail
-          if yc serverless api-gateway get --name "$APIGW_NAME" >/dev/null 2>&1; then
-            yc serverless api-gateway update --name "$APIGW_NAME" --spec=apigw.yaml
+          set -e
+          if $YC serverless api-gateway get --name "$APIGW_NAME" >/dev/null 2>&1; then
+            $YC serverless api-gateway update --name "$APIGW_NAME" --spec=apigw.yaml
           else
-            yc serverless api-gateway create --name "$APIGW_NAME" --spec=apigw.yaml
+            $YC serverless api-gateway create --name "$APIGW_NAME" --spec=apigw.yaml
           fi
-          GW_DOMAIN="$(yc serverless api-gateway get --name "$APIGW_NAME" --format json | jq -r .domain)"
+          GW_DOMAIN=$($YC serverless api-gateway get --name "$APIGW_NAME" --format json | jq -r .domain)
           echo "url=https://${GW_DOMAIN}" >> $GITHUB_OUTPUT
 
-      # ---------- Frontend: inject API URL & upload ----------
+      # ------------ Frontend: inject API URL & upload ------------
       - name: Inject API base URL into web/app.js
+        shell: bash
         run: |
-          test -f web/app.js || (echo "file web/app.js not found" && exit 1)
-          grep -q "%%API_BASE%%" web/app.js || (echo "Add %%API_BASE%% placeholder to web/app.js" && exit 1)
-          sed -i -e "s|%%API_BASE%%|${{ steps.gw.outputs.url }}|g" web/app.js
+          set -e
+          API_BASE="${{ steps.gw.outputs.url }}"
+          sed -i "s|%%API_BASE%%|$API_BASE|g" web/app.js
+          # На случай повторного запуска: если плейсхолдер уже заменён, этот шаг ничего не ломает.
 
       - name: Install AWS CLI
+        shell: bash
         run: |
+          set -e
           pip install --upgrade --user awscli
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+          aws --version
 
-      - name: Configure AWS creds (Yandex S3)
+      - name: Configure AWS credentials (Yandex S3)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.S3_ACCESS_KEY_ID }}
@@ -110,10 +131,13 @@ jobs:
           aws-region: 'ru-central1'
 
       - name: Upload web to Object Storage
+        shell: bash
         run: |
-          aws --endpoint-url "${S3_ENDPOINT}" s3 sync ./web "s3://${WEB_BUCKET}" --delete
+          set -e
+          aws --endpoint-url "${S3_ENDPOINT}" s3 sync ./web s3://${WEB_BUCKET} --delete
 
-      - name: Print URLs
+      - name: Summary
+        shell: bash
         run: |
-          echo "Frontend: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
-          echo "API Base:  ${{ steps.gw.outputs.url }}"
+          echo "Frontend URL: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
+          echo "API Base URL : ${{ steps.gw.outputs.url }}"
