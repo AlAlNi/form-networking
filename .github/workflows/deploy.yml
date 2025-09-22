@@ -6,48 +6,55 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     env:
       YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
       YC_CLOUD_ID:  ${{ secrets.YC_CLOUD_ID }}
       WEB_BUCKET:   ${{ secrets.WEB_BUCKET }}
       S3_ENDPOINT:  ${{ secrets.S3_ENDPOINT }}
-      BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
       APIGW_NAME:   ${{ secrets.APIGW_NAME }}
+      # BOT_TOKEN можно держать как секрет или как env:
+      BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate required secrets (fail fast)
+      # ---------- Fail-fast: проверяем все обязательные секреты ----------
+      - name: Validate required secrets
+        env:
+          CHECK_YC_SA_JSON_B64:   ${{ secrets.YC_SA_JSON_B64 }}
+          CHECK_YC_FOLDER_ID:     ${{ secrets.YC_FOLDER_ID }}
+          CHECK_YC_CLOUD_ID:      ${{ secrets.YC_CLOUD_ID }}
+          CHECK_APIGW_NAME:       ${{ secrets.APIGW_NAME }}
+          CHECK_WEB_BUCKET:       ${{ secrets.WEB_BUCKET }}
+          CHECK_S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          CHECK_S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
         run: |
-          test -n "${{ secrets.YC_SA_JSON }}" || (echo "YC_SA_JSON is empty" && exit 1)
-          test -n "${YC_FOLDER_ID}"           || (echo "YC_FOLDER_ID is empty" && exit 1)
-          test -n "${YC_CLOUD_ID}"            || (echo "YC_CLOUD_ID is empty" && exit 1)
-          test -n "${APIGW_NAME}"             || (echo "APIGW_NAME is empty" && exit 1)
-          test -n "${WEB_BUCKET}"             || (echo "WEB_BUCKET is empty" && exit 1)
-          test -n "${{ secrets.S3_ACCESS_KEY_ID }}"     || (echo "S3_ACCESS_KEY_ID is empty" && exit 1)
-          test -n "${{ secrets.S3_SECRET_ACCESS_KEY }}" || (echo "S3_SECRET_ACCESS_KEY is empty" && exit 1)
+          set -e
+          for v in CHECK_YC_SA_JSON_B64 CHECK_YC_FOLDER_ID CHECK_YC_CLOUD_ID CHECK_APIGW_NAME CHECK_WEB_BUCKET CHECK_S3_ACCESS_KEY_ID CHECK_S3_SECRET_ACCESS_KEY; do
+            if [ -z "${!v}" ]; then echo "Secret $v is empty"; exit 1; fi
+          done
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Install YC CLI
+      - name: Install tools (jq + yc)
         run: |
+          sudo apt-get update && sudo apt-get install -y jq
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i $HOME/yandex-cloud -n
           echo "$HOME/yandex-cloud/bin" >> $GITHUB_PATH
           yc version
 
-      - name: YC auth
+      # ---------- Auth ----------
+      - name: YC auth (decode base64 key)
         env:
-          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
+          YC_SA_JSON_B64: ${{ secrets.YC_SA_JSON_B64 }}
         run: |
-          echo "$YC_SA_JSON" > key.json
+          echo "$YC_SA_JSON_B64" | base64 -d > key.json
           yc config set service-account-key key.json
           yc config set cloud-id  "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
           yc config set endpoint api.cloud.yandex.net
 
-      # ---------- Backend ----------
+      # ---------- Backend (Cloud Function) ----------
       - name: Install server deps
         working-directory: server
         run: npm ci
@@ -80,13 +87,16 @@ jobs:
             --entrypoint index.handler \
             --memory 128m \
             --execution-timeout 5s \
-            --environment BOT_TOKEN=${BOT_TOKEN},DEMO=1 \
+            --environment BOT_TOKEN="${BOT_TOKEN}",DEMO=1 \
             --source-path server.zip
 
       - name: Wait function ACTIVE
         run: |
           for i in {1..40}; do
-            st=$(yc serverless function version list --function-id "${{ steps.fn.outputs.id }}" --folder-id "$YC_FOLDER_ID" --format json | jq -r '.[-1].status')
+            st=$(yc serverless function version list \
+              --function-id "${{ steps.fn.outputs.id }}" \
+              --folder-id "$YC_FOLDER_ID" \
+              --format json | jq -r '.[-1].status')
             [ "$st" = "ACTIVE" ] && exit 0
             sleep 3
           done
@@ -99,26 +109,26 @@ jobs:
           sed -i "s|\${FUNCTION_ID}|${{ steps.fn.outputs.id }}|g" apigw.yaml
           echo "== apigw.yaml ==" && cat apigw.yaml
 
-      - name: Resolve SA_ID (no jq on bindings)
+      - name: Resolve SA_ID
         id: sa
         run: |
           set -e
           SA_NAME="form-networking-sa"
-          yc iam service-account get --name "$SA_NAME" --format json > sa.json
-          SA_ID=$(jq -r '.id' sa.json)
+          SA_ID=$(yc iam service-account get --name "$SA_NAME" --format json | jq -r '.id')
           if [ -z "$SA_ID" ] || [ "$SA_ID" = "null" ]; then
-            echo "Failed to resolve SA_ID"; cat sa.json; exit 1
+            echo "Failed to resolve SA_ID"; exit 1
           fi
           echo "id=$SA_ID" >> $GITHUB_OUTPUT
           echo "SA_ID=$SA_ID"
 
-      - name: Ensure API Gateway exists (idempotent, with SA)
+      - name: Ensure API Gateway exists (with SA, idempotent, backoff)
         id: gw
         env:
           APIGW_NAME: ${{ secrets.APIGW_NAME }}
         run: |
           set -e
-          if yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
+          yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1 && EXISTS=1 || EXISTS=0
+          if [ "$EXISTS" = "1" ]; then
             echo "Updating API GW: $APIGW_NAME"
             for i in 1 2 3 4 5; do
               yc --debug serverless api-gateway update \
@@ -164,7 +174,7 @@ jobs:
 
       - name: Upload web to Object Storage
         run: |
-          aws --endpoint-url "${S3_ENDPOINT}" s3 sync ./web s3://${WEB_BUCKET} --delete
+          aws --endpoint-url "${S3_ENDPOINT}" s3 sync ./web "s3://${WEB_BUCKET}" --delete
 
       - name: Summary
         run: |
