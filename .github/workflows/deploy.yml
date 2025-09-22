@@ -1,4 +1,5 @@
 name: Deploy to Yandex Cloud
+
 on:
   push:
     branches: [ main ]
@@ -6,6 +7,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 18   # ⟵ ограничиваем максимальную длительность job
 
     env:
       YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
@@ -19,7 +21,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- Fail-fast проверка секретов ----------
+      # ---- Fail-fast: проверка секретов (без '=') ----
       - name: Validate required secrets
         env:
           REQ_YC_SA_JSON_B64:        ${{ secrets.YC_SA_JSON_B64 }}
@@ -42,7 +44,7 @@ jobs:
       - name: Install jq + net utils
         run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd dnsutils openssl
 
-      # ---------- Установка YC CLI + PATH через GITHUB_ENV ----------
+      # ---- Установка YC CLI + PATH через GITHUB_ENV ----
       - name: Install YC CLI
         shell: bash
         run: |
@@ -51,36 +53,18 @@ jobs:
           echo "PATH=$HOME/yandex-cloud/bin:$PATH" >> "$GITHUB_ENV"
           "$HOME/yandex-cloud/bin/yc" --version
 
-      # ---------- Preflight сети к API + ожидание доступности ----------
+      # ---- Быстрый preflight сети (не ретраим бесконечно) ----
       - name: Network preflight to api.cloud.yandex.net:443
         shell: bash
         env:
           TARGET: api.cloud.yandex.net
         run: |
           set -e
-          echo "DNS:"
           dig +short "$TARGET" || true
-          echo "TCP 443 (nc):"
           nc -zv "$TARGET" 443
-          echo "TLS (openssl):"
           echo | openssl s_client -connect "$TARGET:443" -servername "$TARGET" -brief
 
-      - name: Wait for YC API reachable (curl loop)
-        shell: bash
-        env:
-          TARGET: https://api.cloud.yandex.net/
-        run: |
-          set -e
-          for i in {1..30}; do
-            code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$TARGET" || true)
-            if [ -n "$code" ]; then
-              echo "YC API HTTP code: $code (ok: any code means TCP/TLS works)"; break
-            fi
-            echo "YC API not reachable, attempt $i/30..."
-            sleep 3
-          done
-
-      # ---------- Аутентификация (ключ в base64) ----------
+      # ---- Аутентификация (ключ в base64) ----
       - name: YC auth (decode base64 key)
         shell: bash
         env:
@@ -93,36 +77,38 @@ jobs:
           yc config set folder-id "$YC_FOLDER_ID"
           yc config set endpoint api.cloud.yandex.net
 
-      # ---------- Обёртка с ретраями для yc-команд ----------
-      - name: Define yc_retry helpers
+      # ---- Обёртка для yc с ограничением попыток и выводом в stderr ----
+      - name: Define yc_retry helper
         shell: bash
         run: |
           cat <<'EOS' > yc_retry.sh
           #!/usr/bin/env bash
+          # Usage: ./yc_retry.sh <tries> <timeoutSec> yc <args...>
           set -o pipefail
-          tries=${1:-10}; shift
+          tries=${1:-5}; shift
+          tmo=${1:-20}; shift
           delay=2
-          cmd=("$@")
           for i in $(seq 1 $tries); do
-            "${cmd[@]}" && exit 0
+            # ограничиваем время каждой попытки
+            timeout "$tmo" "$@" && exit 0
             code=$?
-            echo "yc failed (exit $code), attempt $i/$tries. Sleep ${delay}s..."
-            sleep $delay
-            delay=$((delay*2)); [ $delay -gt 30 ] && delay=30
+            >&2 echo "yc failed (exit $code), attempt $i/$tries; sleep ${delay}s…"
+            sleep "$delay"
+            delay=$((delay*2)); [ $delay -gt 10 ] && delay=10
           done
-          echo "Final attempt with --debug:"
-          "${cmd[@]}" --debug
+          >&2 echo "Final attempt with --debug (bounded timeout ${tmo}s)"
+          timeout "$tmo" "$@" --debug
           exit $?
           EOS
           chmod +x yc_retry.sh
 
-      # ---------- Node.js окружение ----------
+      # ---- Node.js окружение ----
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # ---------- Backend: Cloud Function ----------
+      # ---- Backend: Cloud Function ----
       - name: Install server deps
         working-directory: server
         run: npm ci
@@ -133,26 +119,27 @@ jobs:
           cd server
           zip -r ../server.zip .
 
-      - name: Ensure function exists (with retry)
+      - name: Ensure function exists (bounded retries)
         id: fn
         shell: bash
         run: |
           set -e
           FN_NAME="form-networking-fn"
-          if ./yc_retry.sh 10 yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
+          if ./yc_retry.sh 5 20 yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
             echo "exists=1" >> "$GITHUB_OUTPUT"
           else
-            ./yc_retry.sh 10 yc serverless function create --name "$FN_NAME" --folder-id "$YC_FOLDER_ID"
+            ./yc_retry.sh 5 20 yc serverless function create --name "$FN_NAME" --folder-id "$YC_FOLDER_ID"
             echo "exists=0" >> "$GITHUB_OUTPUT"
           fi
-          FN_ID=$(./yc_retry.sh 10 yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .id)
+          # ВАЖНО: yc_retry пишет сервисные сообщения в stderr, stdout — только JSON
+          FN_ID=$(./yc_retry.sh 5 20 yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .id)
           echo "id=$FN_ID" >> "$GITHUB_OUTPUT"
           echo "FN_ID=$FN_ID"
 
-      - name: Deploy function version (with retry)
+      - name: Deploy function version (bounded retries)
         shell: bash
         run: |
-          ./yc_retry.sh 10 yc serverless function version create \
+          ./yc_retry.sh 5 60 yc serverless function version create \
             --function-id  "${{ steps.fn.outputs.id }}" \
             --runtime nodejs18 \
             --entrypoint index.handler \
@@ -161,7 +148,7 @@ jobs:
             --environment BOT_TOKEN="${BOT_TOKEN}",DEMO=1 \
             --source-path server.zip
 
-      - name: Wait function ACTIVE (poll)
+      - name: Wait function ACTIVE (<= 2 мин)
         shell: bash
         run: |
           for i in {1..40}; do
@@ -174,7 +161,7 @@ jobs:
           done
           echo "Function version not ACTIVE"; exit 1
 
-      # ---------- API Gateway ----------
+      # ---- API Gateway ----
       - name: Prepare OpenAPI with function id
         shell: bash
         run: |
@@ -182,46 +169,46 @@ jobs:
           sed -i "s|\${FUNCTION_ID}|${{ steps.fn.outputs.id }}|g" apigw.yaml
           echo "== apigw.yaml ==" && cat apigw.yaml
 
-      - name: Resolve SA_ID (with retry)
+      - name: Resolve SA_ID (bounded retries)
         id: sa
         shell: bash
         run: |
           set -e
           SA_NAME="form-networking-sa"
-          SA_ID=$(./yc_retry.sh 10 yc iam service-account get --name "$SA_NAME" --format json | jq -r '.id')
+          SA_ID=$(./yc_retry.sh 5 20 yc iam service-account get --name "$SA_NAME" --format json | jq -r '.id')
           if [ -z "$SA_ID" ] || [ "$SA_ID" = "null" ]; then
             echo "Failed to resolve SA_ID"; exit 1
           fi
           echo "id=$SA_ID" >> "$GITHUB_OUTPUT"
           echo "SA_ID=$SA_ID"
 
-      - name: Ensure API Gateway exists (with SA, idempotent, retry)
+      - name: Ensure API Gateway exists (idempotent, bounded retries)
         id: gw
         shell: bash
         env:
           APIGW_NAME: ${{ secrets.APIGW_NAME }}
         run: |
           set -e
-          if ./yc_retry.sh 10 yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
+          if ./yc_retry.sh 5 30 yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
             echo "Updating API GW: $APIGW_NAME"
-            ./yc_retry.sh 10 yc serverless api-gateway update \
+            ./yc_retry.sh 5 60 yc serverless api-gateway update \
               --name "$APIGW_NAME" \
               --folder-id "$YC_FOLDER_ID" \
               --service-account-id "${{ steps.sa.outputs.id }}" \
               --spec=apigw.yaml
           else
             echo "Creating API GW: $APIGW_NAME"
-            ./yc_retry.sh 10 yc serverless api-gateway create \
+            ./yc_retry.sh 5 60 yc serverless api-gateway create \
               --name "$APIGW_NAME" \
               --folder-id "$YC_FOLDER_ID" \
               --service-account-id "${{ steps.sa.outputs.id }}" \
               --spec=apigw.yaml
           fi
-          GW_URL=$(./yc_retry.sh 10 yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .domain)
+          GW_URL=$(./yc_retry.sh 5 20 yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .domain)
           echo "url=https://${GW_URL}" >> "$GITHUB_OUTPUT"
           echo "GW_URL=https://${GW_URL}"
 
-      # ---------- Frontend ----------
+      # ---- Frontend ----
       - name: Inject API base URL into web/app.js
         shell: bash
         run: |
