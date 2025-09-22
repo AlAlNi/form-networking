@@ -17,13 +17,11 @@ app.use((req,res,next)=>{
 app.get('/health', (req,res)=> res.json({ok:true}));
 
 app.post('/api/applications', (req,res)=>{
-  const { BOT_TOKEN='dummy', DEMO='1' } = process.env;
   const initData = req.header('X-Telegram-Init-Data') || '';
-
+  const { BOT_TOKEN='dummy', DEMO='1' } = process.env;
   if (DEMO !== '1' && !verifyInitData(initData, BOT_TOKEN)) {
     return res.status(401).json({error:'unauthorized'});
   }
-
   const { name, username } = req.body || {};
   if (!name || !username) return res.status(400).json({error:'bad_payload'});
 
@@ -31,8 +29,6 @@ app.post('/api/applications', (req,res)=>{
   return res.json({ok:true});
 });
 
-app.get('/api/applications', (req,res)=>{
-  res.json(DemoStore.list());
-});
+app.get('/api/applications', (req,res)=> res.json(DemoStore.list()));
 
 export const handler = serverless(app);
