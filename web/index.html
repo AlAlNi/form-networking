@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <title>Регистрация участников</title>
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <header class="hero">
+    <!-- Без картинок на первом шаге, чтобы ничего не «сломалось» -->
+    <div class="hero-stub"></div>
+  </header>
+
+  <div class="badge">ДЕМО режим — данные не сохраняются</div>
+
+  <main class="card" id="card-form">
+    <h1>Заявка на нетворкинг</h1>
+    <p class="muted">Шаг 1: чистая статика с кнопкой. Бэкенд позже.</p>
+
+    <form id="form">
+      <label>Имя
+        <input id="name" name="name" placeholder="Alex (Alexis)" required/>
+      </label>
+
+      <label>Telegram @username
+        <input id="username" name="username" placeholder="@username" required/>
+      </label>
+
+      <button id="submit" type="button">Отправить</button>
+    </form>
+
+    <p id="note" class="muted">Нажатие пока ничего не отправляет — это просто заглушка.</p>
+  </main>
+
+  <script>
+    document.getElementById('submit').addEventListener('click', ()=>{
+      alert('Шаг 1: это статика. Бэкенд подключим на шаге 2.');
+    });
+  </script>
+</body>
+</html>
