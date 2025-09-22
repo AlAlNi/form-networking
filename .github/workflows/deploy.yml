@@ -44,6 +44,20 @@ jobs:
         run: |
           yc resource-manager folder get "$YC_FOLDER_ID" >/dev/null
 
+      - name: Extract service account id
+        id: sa
+        env:
+          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
+        run: |
+          set -euo pipefail
+          SA_ID=$(echo "$YC_SA_JSON" | jq -r '.service_account_id')
+          if [ -z "$SA_ID" ] || [ "$SA_ID" = "null" ]; then
+            echo "Unable to extract service_account_id from YC_SA_JSON" >&2
+            exit 1
+          fi
+          echo "Using service account: $SA_ID"
+          echo "id=$SA_ID" >> "$GITHUB_OUTPUT"
+
       # ---------- Backend: Function ----------
       - uses: actions/setup-node@v4
         with:
@@ -78,6 +92,22 @@ jobs:
           FN_ID=$(retry yc serverless function get --name "$FN_NAME" --format json | jq -r .id)
           echo "id=$FN_ID" >> $GITHUB_OUTPUT
 
+      - name: Ensure service account can invoke function
+        run: |
+          set -euo pipefail
+          retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
+          FN_ID="${{ steps.fn.outputs.id }}"
+          SA_ID="${{ steps.sa.outputs.id }}"
+          SUBJECT="serviceAccount:${SA_ID}"
+          ROLE="serverless.functions.invoker"
+          BINDINGS=$(retry yc serverless function list-access-bindings --id "$FN_ID" --format json)
+          if ! echo "$BINDINGS" | jq -e --arg subject "$SUBJECT" --arg role "$ROLE" 'any(.bindings[]?; .role == $role and .subject == $subject)' >/dev/null; then
+            echo "Adding access binding for $SUBJECT"
+            retry yc serverless function add-access-binding --id "$FN_ID" --role "$ROLE" --subject "$SUBJECT"
+          else
+            echo "Access binding for $SUBJECT already exists"
+          fi
+
       - name: Deploy function version
         run: |
           set -e
@@ -94,18 +124,34 @@ jobs:
       # ---------- API Gateway ----------
       - name: Prepare OpenAPI with function id
         run: |
+          set -euo pipefail
           cp infra/apigw-openapi.yaml apigw.yaml
           sed -i "s|\${FUNCTION_ID}|${{ steps.fn.outputs.id }}|g" apigw.yaml
+          if grep -q '\${FUNCTION_ID}' apigw.yaml; then
+            echo "FUNCTION_ID placeholder was not replaced" >&2
+            exit 1
+          fi
+          if grep -Eq 'function_id:[[:space:]]*$' apigw.yaml; then
+            echo "function_id is empty in apigw.yaml" >&2
+            exit 1
+          fi
+          echo "Prepared API Gateway spec:"
+          cat apigw.yaml
 
       - name: Ensure API Gateway exists
         id: gw
         run: |
           set -e
           retry(){ local n=0; until "$@"; do n=$((n+1)); [ $n -ge 5 ] && return 1; sleep $((n*5)); done; }
+          SA_ID="${{ steps.sa.outputs.id }}"
+          if [ -z "$SA_ID" ]; then
+            echo "Service account id is empty" >&2
+            exit 1
+          fi
           if retry yc serverless api-gateway get --name "$APIGW_NAME" >/dev/null 2>&1; then
-            retry yc serverless api-gateway update --name "$APIGW_NAME" --spec=apigw.yaml
+            retry yc serverless api-gateway update --name "$APIGW_NAME" --spec=apigw.yaml --service-account-id "$SA_ID"
           else
-            retry yc serverless api-gateway create --name "$APIGW_NAME" --spec=apigw.yaml
+            retry yc serverless api-gateway create --name "$APIGW_NAME" --spec=apigw.yaml --service-account-id "$SA_ID"
           fi
           GW_JSON=$(retry yc serverless api-gateway get --name "$APIGW_NAME" --format json)
           GW_URL=$(echo "$GW_JSON" | jq -r .domain)
@@ -139,3 +185,11 @@ jobs:
             echo "Frontend URL: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
             echo "API Base URL : ${{ steps.gw.outputs.url }}"
           } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload YC CLI log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yc-cli-log
+          path: ~/.config/yandex-cloud/logs/cli.log
+          if-no-files-found: ignore
