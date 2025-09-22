@@ -1,0 +1,8 @@
+# OS / tools
+.DS_Store
+Thumbs.db
+node_modules/
+server.zip
+
+# local keys
+key.json
