@@ -1,0 +1,9 @@
+{
+  "name": "form-networking-server",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@yandex-cloud/function-express": "^1.0.1",
+    "express": "^4.19.2"
+  }
+}
