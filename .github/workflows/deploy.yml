@@ -1,145 +1,105 @@
-name: Deploy to Yandex Cloud
+name: Deploy to Yandex Cloud (self-hosted runner)
 
 on:
   push:
     branches: [ main ]
 
 jobs:
-  deploy:
+  # 1) Поднимаем временный раннер в Яндекс Облаке
+  start-runner:
+    name: Start YC runner
     runs-on: ubuntu-latest
-    timeout-minutes: 18   # ⟵ ограничиваем максимальную длительность job
+    outputs:
+      label: ${{ steps.start.outputs.label }}
+      instance-id: ${{ steps.start.outputs.instance-id }}
+    steps:
+      - name: Start runner VM in YC
+        id: start
+        uses: yc-actions/yc-github-runner@v2
+        with:
+          mode: start
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}   # сырой JSON ключа SA
+          github-token:               ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }} # GitHub PAT (scope: repo)
+          folder-id:                  ${{ secrets.YC_FOLDER_ID }}
+          subnet-id:                  ${{ secrets.SUBNET_ID }}               # например e9b88fcnifb1n74c80ds
+          image-id:                   ${{ secrets.IMAGE_ID }}                # ubuntu-2204/2404 LTS из standard-images
+          cores: 2
+          memory: 4GB
+          core-fraction: 100
+          ttl: PT2H
+
+  # 2) Сам деплой, выполняется на поднятом раннере
+  deploy:
+    name: Deploy backend+gateway+frontend
+    needs: start-runner
+    runs-on: ${{ needs.start-runner.outputs.label }}
+    timeout-minutes: 20
 
     env:
       YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
       YC_CLOUD_ID:  ${{ secrets.YC_CLOUD_ID }}
+      APIGW_NAME:   ${{ secrets.APIGW_NAME }}
       WEB_BUCKET:   ${{ secrets.WEB_BUCKET }}
       S3_ENDPOINT:  ${{ secrets.S3_ENDPOINT }}
-      APIGW_NAME:   ${{ secrets.APIGW_NAME }}
       BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
+      # выключаем неожиданные прокси на раннере
+      NO_PROXY: api.cloud.yandex.net,.yandexcloud.net
+      no_proxy: api.cloud.yandex.net,.yandexcloud.net
+      HTTPS_PROXY: ""
+      https_proxy: ""
+      HTTP_PROXY: ""
+      http_proxy: ""
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---- Fail-fast: проверка секретов (без '=') ----
-      - name: Validate required secrets
-        env:
-          REQ_YC_SA_JSON_B64:        ${{ secrets.YC_SA_JSON_B64 }}
-          REQ_YC_FOLDER_ID:          ${{ secrets.YC_FOLDER_ID }}
-          REQ_YC_CLOUD_ID:           ${{ secrets.YC_CLOUD_ID }}
-          REQ_APIGW_NAME:            ${{ secrets.APIGW_NAME }}
-          REQ_WEB_BUCKET:            ${{ secrets.WEB_BUCKET }}
-          REQ_S3_ENDPOINT:           ${{ secrets.S3_ENDPOINT }}
-          REQ_S3_ACCESS_KEY_ID:      ${{ secrets.S3_ACCESS_KEY_ID }}
-          REQ_S3_SECRET_ACCESS_KEY:  ${{ secrets.S3_SECRET_ACCESS_KEY }}
-        shell: bash
-        run: |
-          set -e
-          check(){ local v="$1"; [ -n "${!v}" ] && [ "${!v}" != "null" ] || { echo "❌ Missing $v"; exit 1; }; }
-          for v in REQ_YC_SA_JSON_B64 REQ_YC_FOLDER_ID REQ_YC_CLOUD_ID REQ_APIGW_NAME REQ_WEB_BUCKET REQ_S3_ENDPOINT REQ_S3_ACCESS_KEY_ID REQ_S3_SECRET_ACCESS_KEY; do
-            check "$v"
-          done
-          echo "✅ Secrets check passed"
+      - name: Install basics
+        run: sudo apt-get update && sudo apt-get install -y jq zip curl netcat-openbsd
 
-      - name: Install jq + net utils
-        run: sudo apt-get update && sudo apt-get install -y jq netcat-openbsd dnsutils openssl
-
-      # ---- Установка YC CLI + PATH через GITHUB_ENV ----
       - name: Install YC CLI
-        shell: bash
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh \
             | bash -s -- -i "$HOME/yandex-cloud" -n
-          echo "PATH=$HOME/yandex-cloud/bin:$PATH" >> "$GITHUB_ENV"
-          "$HOME/yandex-cloud/bin/yc" --version
+          echo "$HOME/yandex-cloud/bin" >> $GITHUB_PATH
+          yc --version
 
-      # ---- Быстрый preflight сети (не ретраим бесконечно) ----
-      - name: Network preflight to api.cloud.yandex.net:443
-        shell: bash
+      - name: Auth YC (raw JSON secret)
         env:
-          TARGET: api.cloud.yandex.net
+          YC_SA_JSON_CREDENTIALS: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
         run: |
-          set -e
-          dig +short "$TARGET" || true
-          nc -zv "$TARGET" 443
-          echo | openssl s_client -connect "$TARGET:443" -servername "$TARGET" -brief
-
-      # ---- Аутентификация (ключ в base64) ----
-      - name: YC auth (decode base64 key)
-        shell: bash
-        env:
-          YC_SA_JSON_B64: ${{ secrets.YC_SA_JSON_B64 }}
-        run: |
-          set -e
-          echo "$YC_SA_JSON_B64" | base64 -d > key.json
+          echo "$YC_SA_JSON_CREDENTIALS" > key.json
           yc config set service-account-key key.json
           yc config set cloud-id  "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
-          yc config set endpoint api.cloud.yandex.net
+          yc config set endpoint  api.cloud.yandex.net
 
-      # ---- Обёртка для yc с ограничением попыток и выводом в stderr ----
-      - name: Define yc_retry helper
-        shell: bash
-        run: |
-          cat <<'EOS' > yc_retry.sh
-          #!/usr/bin/env bash
-          # Usage: ./yc_retry.sh <tries> <timeoutSec> yc <args...>
-          set -o pipefail
-          tries=${1:-5}; shift
-          tmo=${1:-20}; shift
-          delay=2
-          for i in $(seq 1 $tries); do
-            # ограничиваем время каждой попытки
-            timeout "$tmo" "$@" && exit 0
-            code=$?
-            >&2 echo "yc failed (exit $code), attempt $i/$tries; sleep ${delay}s…"
-            sleep "$delay"
-            delay=$((delay*2)); [ $delay -gt 10 ] && delay=10
-          done
-          >&2 echo "Final attempt with --debug (bounded timeout ${tmo}s)"
-          timeout "$tmo" "$@" --debug
-          exit $?
-          EOS
-          chmod +x yc_retry.sh
-
-      # ---- Node.js окружение ----
+      # ---------- Backend: Cloud Function ----------
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # ---- Backend: Cloud Function ----
       - name: Install server deps
         working-directory: server
         run: npm ci
 
       - name: Zip server
-        shell: bash
-        run: |
-          cd server
-          zip -r ../server.zip .
+        run: (cd server && zip -r ../server.zip .)
 
-      - name: Ensure function exists (bounded retries)
+      - name: Ensure function exists
         id: fn
-        shell: bash
         run: |
           set -e
           FN_NAME="form-networking-fn"
-          if ./yc_retry.sh 5 20 yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
-            echo "exists=1" >> "$GITHUB_OUTPUT"
-          else
-            ./yc_retry.sh 5 20 yc serverless function create --name "$FN_NAME" --folder-id "$YC_FOLDER_ID"
-            echo "exists=0" >> "$GITHUB_OUTPUT"
-          fi
-          # ВАЖНО: yc_retry пишет сервисные сообщения в stderr, stdout — только JSON
-          FN_ID=$(./yc_retry.sh 5 20 yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .id)
+          yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1 \
+            || yc serverless function create --name "$FN_NAME" --folder-id "$YC_FOLDER_ID"
+          FN_ID=$(yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .id)
           echo "id=$FN_ID" >> "$GITHUB_OUTPUT"
-          echo "FN_ID=$FN_ID"
 
-      - name: Deploy function version (bounded retries)
-        shell: bash
+      - name: Deploy function version
         run: |
-          ./yc_retry.sh 5 60 yc serverless function version create \
+          yc serverless function version create \
             --function-id  "${{ steps.fn.outputs.id }}" \
             --runtime nodejs18 \
             --entrypoint index.handler \
@@ -148,97 +108,75 @@ jobs:
             --environment BOT_TOKEN="${BOT_TOKEN}",DEMO=1 \
             --source-path server.zip
 
-      - name: Wait function ACTIVE (<= 2 мин)
-        shell: bash
+      - name: Wait function ACTIVE
         run: |
           for i in {1..40}; do
             st=$(yc serverless function version list \
               --function-id "${{ steps.fn.outputs.id }}" \
-              --folder-id "$YC_FOLDER_ID" \
-              --format json | jq -r '.[-1].status' 2>/dev/null || echo "")
+              --folder-id "$YC_FOLDER_ID" --format json | jq -r '.[-1].status')
             [ "$st" = "ACTIVE" ] && exit 0
             sleep 3
           done
           echo "Function version not ACTIVE"; exit 1
 
-      # ---- API Gateway ----
+      # ---------- API Gateway ----------
       - name: Prepare OpenAPI with function id
-        shell: bash
         run: |
           cp infra/apigw-openapi.yaml apigw.yaml
           sed -i "s|\${FUNCTION_ID}|${{ steps.fn.outputs.id }}|g" apigw.yaml
           echo "== apigw.yaml ==" && cat apigw.yaml
 
-      - name: Resolve SA_ID (bounded retries)
+      - name: Resolve SA_ID (runtime for gateway)
         id: sa
-        shell: bash
         run: |
-          set -e
-          SA_NAME="form-networking-sa"
-          SA_ID=$(./yc_retry.sh 5 20 yc iam service-account get --name "$SA_NAME" --format json | jq -r '.id')
-          if [ -z "$SA_ID" ] || [ "$SA_ID" = "null" ]; then
-            echo "Failed to resolve SA_ID"; exit 1
-          fi
+          SA_ID=$(yc iam service-account get --name form-networking-sa --format json | jq -r '.id')
           echo "id=$SA_ID" >> "$GITHUB_OUTPUT"
-          echo "SA_ID=$SA_ID"
 
-      - name: Ensure API Gateway exists (idempotent, bounded retries)
+      - name: Create/Update API Gateway (idempotent)
         id: gw
-        shell: bash
-        env:
-          APIGW_NAME: ${{ secrets.APIGW_NAME }}
         run: |
           set -e
-          if ./yc_retry.sh 5 30 yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
-            echo "Updating API GW: $APIGW_NAME"
-            ./yc_retry.sh 5 60 yc serverless api-gateway update \
+          if yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
+            yc serverless api-gateway update \
               --name "$APIGW_NAME" \
               --folder-id "$YC_FOLDER_ID" \
               --service-account-id "${{ steps.sa.outputs.id }}" \
               --spec=apigw.yaml
           else
-            echo "Creating API GW: $APIGW_NAME"
-            ./yc_retry.sh 5 60 yc serverless api-gateway create \
+            yc serverless api-gateway create \
               --name "$APIGW_NAME" \
               --folder-id "$YC_FOLDER_ID" \
               --service-account-id "${{ steps.sa.outputs.id }}" \
               --spec=apigw.yaml
           fi
-          GW_URL=$(./yc_retry.sh 5 20 yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .domain)
+          GW_URL=$(yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .domain)
           echo "url=https://${GW_URL}" >> "$GITHUB_OUTPUT"
-          echo "GW_URL=https://${GW_URL}"
+          echo "API GW: https://${GW_URL}"
 
-      # ---- Frontend ----
+      # ---------- Frontend ----------
       - name: Inject API base URL into web/app.js
-        shell: bash
         run: |
           API_BASE="${{ steps.gw.outputs.url }}"
           sed -i "s|%%API_BASE%%|$API_BASE|g" web/app.js
           echo "API_BASE set to $API_BASE"
 
       - name: Install AWS CLI
-        shell: bash
         run: |
           pip install --upgrade --user awscli
-          echo "$HOME/.local/bin" >> "$GITHUB_ENV"
-
-      - name: Configure AWS credentials (Yandex S3)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.S3_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.S3_SECRET_ACCESS_KEY }}
-          aws-region: 'ru-central1'
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Upload web to Object Storage
-        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
         run: |
           aws --endpoint-url "${S3_ENDPOINT}" s3 sync ./web "s3://${WEB_BUCKET}" --delete
+          echo "Frontend URL: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
 
       - name: Summary
-        shell: bash
         run: |
-          echo "Frontend URL: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
-          echo "API Base URL : ${{ steps.gw.outputs.url }}"
+          echo "✅ API Base URL : ${{ steps.gw.outputs.url }}"
+          echo "✅ Frontend URL : https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
 
       - name: Upload YC trace logs (if failed)
         if: failure()
@@ -246,3 +184,19 @@ jobs:
         with:
           name: yc-traces
           path: /home/runner/.config/yandex-cloud/logs/*.txt
+
+  # 3) Гасим раннер при любом исходе
+  stop-runner:
+    name: Stop YC runner
+    needs: [start-runner, deploy]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop runner VM
+        uses: yc-actions/yc-github-runner@v2
+        with:
+          mode: stop
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          label: ${{ needs.start-runner.outputs.label }}
+          instance-id: ${{ needs.start-runner.outputs.instance-id }}
