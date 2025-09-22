@@ -21,14 +21,14 @@ jobs:
           yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}   # сырой JSON ключа SA
           github-token:               ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }} # GitHub PAT (scope: repo)
           folder-id:                  ${{ secrets.YC_FOLDER_ID }}
-          subnet-id:                  ${{ secrets.SUBNET_ID }}               # например e9b88fcnifb1n74c80ds
-          image-id:                   ${{ secrets.IMAGE_ID }}                # ubuntu-2204/2404 LTS из standard-images
+          subnet-id:                  ${{ secrets.SUBNET_ID }}               # напр.: e9b88fcnifb1n74c80ds
+          image-id:                   ${{ secrets.IMAGE_ID }}                # Ubuntu LTS из standard-images
           cores: 2
           memory: 4GB
           core-fraction: 100
           ttl: PT2H
 
-  # 2) Сам деплой, выполняется на поднятом раннере
+  # 2) Деплой на поднятом раннере
   deploy:
     name: Deploy backend+gateway+frontend
     needs: start-runner
@@ -42,13 +42,10 @@ jobs:
       WEB_BUCKET:   ${{ secrets.WEB_BUCKET }}
       S3_ENDPOINT:  ${{ secrets.S3_ENDPOINT }}
       BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
-      # выключаем неожиданные прокси на раннере
+      # отключаем прокси на раннере
       NO_PROXY: api.cloud.yandex.net,.yandexcloud.net
-      no_proxy: api.cloud.yandex.net,.yandexcloud.net
       HTTPS_PROXY: ""
-      https_proxy: ""
       HTTP_PROXY: ""
-      http_proxy: ""
 
     steps:
       - name: Checkout
