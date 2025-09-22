@@ -19,28 +19,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # -------- fail-fast проверки секретов (без многословных test) --------
+      # ---------- Fail-fast: корректная проверка секретов (без '=') ----------
       - name: Validate required secrets
+        env:
+          REQ_YC_SA_JSON_B64:        ${{ secrets.YC_SA_JSON_B64 }}
+          REQ_YC_FOLDER_ID:          ${{ secrets.YC_FOLDER_ID }}
+          REQ_YC_CLOUD_ID:           ${{ secrets.YC_CLOUD_ID }}
+          REQ_APIGW_NAME:            ${{ secrets.APIGW_NAME }}
+          REQ_WEB_BUCKET:            ${{ secrets.WEB_BUCKET }}
+          REQ_S3_ENDPOINT:           ${{ secrets.S3_ENDPOINT }}
+          REQ_S3_ACCESS_KEY_ID:      ${{ secrets.S3_ACCESS_KEY_ID }}
+          REQ_S3_SECRET_ACCESS_KEY:  ${{ secrets.S3_SECRET_ACCESS_KEY }}
         shell: bash
         run: |
-          need() { v="$1"; shift; [ -n "${!v}" ] || { echo "❌ Secret/env $v is empty"; exit 1; }; }
-          need YC_FOLDER_ID
-          need YC_CLOUD_ID
-          need APIGW_NAME
-          need WEB_BUCKET
-          need S3_ENDPOINT
-          need BOT_TOKEN || true
-          need GITHUB_REPOSITORY || true
-          need GITHUB_SHA || true
-          need S3_ACCESS_KEY_ID="${{ secrets.S3_ACCESS_KEY_ID }}"
-          need S3_SECRET_ACCESS_KEY="${{ secrets.S3_SECRET_ACCESS_KEY }}"
-          need YC_SA_JSON_B64="${{ secrets.YC_SA_JSON_B64 }}"
+          set -e
+          check() { local v="$1"; [ -n "${!v}" ] && [ "${!v}" != "null" ] || { echo "❌ Missing $v"; exit 1; }; }
+          for v in \
+            REQ_YC_SA_JSON_B64 REQ_YC_FOLDER_ID REQ_YC_CLOUD_ID \
+            REQ_APIGW_NAME REQ_WEB_BUCKET REQ_S3_ENDPOINT \
+            REQ_S3_ACCESS_KEY_ID REQ_S3_SECRET_ACCESS_KEY
+          do
+            check "$v"
+          done
           echo "✅ Secrets check passed"
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      # -------- Установка YC CLI + глобальный PATH через GITHUB_ENV --------
+      # ---------- Установка YC CLI + PATH через GITHUB_ENV ----------
       - name: Install YC CLI
         shell: bash
         run: |
@@ -49,7 +55,7 @@ jobs:
           echo "PATH=$HOME/yandex-cloud/bin:$PATH" >> "$GITHUB_ENV"
           "$HOME/yandex-cloud/bin/yc" --version
 
-      # -------- Аутентификация (ключ в base64) --------
+      # ---------- Аутентификация (ключ в base64) ----------
       - name: YC auth (decode base64 key)
         shell: bash
         env:
@@ -61,13 +67,13 @@ jobs:
           yc config set folder-id "$YC_FOLDER_ID"
           yc config set endpoint api.cloud.yandex.net
 
-      # -------- Node.js окружение для backend --------
+      # ---------- Node.js окружение ----------
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # -------- Backend: сборка и публикация функции --------
+      # ---------- Backend: Cloud Function ----------
       - name: Install server deps
         working-directory: server
         run: npm ci
@@ -119,7 +125,7 @@ jobs:
           done
           echo "Function version not ACTIVE"; exit 1
 
-      # -------- API Gateway --------
+      # ---------- API Gateway ----------
       - name: Prepare OpenAPI with function id
         shell: bash
         run: |
@@ -173,7 +179,7 @@ jobs:
           echo "url=https://${GW_URL}" >> "$GITHUB_OUTPUT"
           echo "GW_URL=https://${GW_URL}"
 
-      # -------- Frontend: инжект URL и заливка в S3 --------
+      # ---------- Frontend ----------
       - name: Inject API base URL into web/app.js
         shell: bash
         run: |
@@ -186,7 +192,6 @@ jobs:
         run: |
           pip install --upgrade --user awscli
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/aws" --version || true
 
       - name: Configure AWS credentials (Yandex S3)
         uses: aws-actions/configure-aws-credentials@v4
