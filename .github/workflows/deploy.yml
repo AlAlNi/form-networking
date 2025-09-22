@@ -20,6 +20,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # --- Устанавливаем yc CLI и jq (без сторонних GitHub Actions)
+      - name: Install yc CLI & jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+          echo "${HOME}/yandex-cloud/bin" >> $GITHUB_PATH
+          yc version
+
+      # --- Аутентификация yc по JSON-ключу SA
+      - name: YC auth
+        env:
+          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
+        run: |
+          echo "$YC_SA_JSON" > key.json
+          yc config set service-account-key key.json
+          yc config set folder-id "$YC_FOLDER_ID"
+          yc config set cloud-id  "$YC_CLOUD_ID"
+          yc config set endpoint  api.cloud.yandex.net
+
       # -------- Backend: package & deploy Cloud Function --------
       - name: Install server deps
         working-directory: server
@@ -29,21 +49,6 @@ jobs:
         run: |
           cd server
           zip -r ../server.zip .
-
-      - name: Install yc CLI
-        uses: yc-actions/yc-install@v1
-        with:
-          version: "0.128.0"
-
-      - name: YC auth
-        env:
-          YC_SA_JSON: ${{ secrets.YC_SA_JSON }}
-        run: |
-          echo "$YC_SA_JSON" > key.json
-          yc config set service-account-key key.json
-          yc config set folder-id $YC_FOLDER_ID
-          yc config set cloud-id  $YC_CLOUD_ID
-          yc config set endpoint api.cloud.yandex.net
 
       - name: Ensure function exists
         id: fn
@@ -98,6 +103,7 @@ jobs:
         run: |
           pip install --upgrade --user awscli
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+          aws --version
 
       - name: Configure AWS credentials (Yandex S3)
         uses: aws-actions/configure-aws-credentials@v4
