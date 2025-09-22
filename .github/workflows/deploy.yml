@@ -39,6 +39,7 @@ jobs:
           yc config set folder-id $YC_FOLDER_ID
           yc config set cloud-id  $YC_CLOUD_ID
           yc config set endpoint api.cloud.yandex.net
+          rm -f key.json
 
       # ---------- Backend: Function ----------
       - name: Install server deps
@@ -117,5 +118,7 @@ jobs:
 
       - name: Summary
         run: |
-          echo "Frontend URL: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
-          echo "API Base URL : ${{ steps.gw.outputs.url }}"
+          {
+            echo "Frontend URL: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
+            echo "API Base URL : ${{ steps.gw.outputs.url }}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
