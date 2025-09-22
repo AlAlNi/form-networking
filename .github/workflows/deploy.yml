@@ -23,7 +23,7 @@ jobs:
       # ------------ Backend: package ------------
       - name: Install server deps
         working-directory: server
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Zip server
         run: |
