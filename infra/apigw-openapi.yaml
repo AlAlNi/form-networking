@@ -16,6 +16,7 @@ paths:
       x-yc-apigateway-integration:
         type: cloud_functions
         function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
   /api/applications:
     get:
       responses:
@@ -37,6 +38,7 @@ paths:
       x-yc-apigateway-integration:
         type: cloud_functions
         function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
     post:
       responses:
         '200':
@@ -69,3 +71,4 @@ paths:
       x-yc-apigateway-integration:
         type: cloud_functions
         function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
