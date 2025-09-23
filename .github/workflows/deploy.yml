@@ -1,214 +1,174 @@
-name: Deploy to Yandex Cloud (self-hosted runner)
+name: Deploy
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+
+permissions:
+  id-token: none
+  contents: read
+
+env:
+  FUNCTION_NAME: ${{ vars.YC_FUNCTION_NAME != '' && vars.YC_FUNCTION_NAME || 'form-networking' }}
+  API_GATEWAY_NAME: ${{ vars.YC_API_GATEWAY_NAME != '' && vars.YC_API_GATEWAY_NAME || 'form-networking-gw' }}
+  STATIC_BUCKET: ${{ vars.YC_STATIC_BUCKET }}
+  DEMO_FLAG: ${{ vars.DEMO_FLAG }}
 
 jobs:
-  preflight:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check required secrets (strict)
-        env:
-          REQ_GH_PAT:                 ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          REQ_YC_SA_JSON_CREDENTIALS: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
-          REQ_YC_FOLDER_ID:           ${{ secrets.YC_FOLDER_ID }}
-          REQ_YC_CLOUD_ID:            ${{ secrets.YC_CLOUD_ID }}
-          REQ_SUBNET_ID:              ${{ secrets.SUBNET_ID }}
-          REQ_IMAGE_ID:               ${{ secrets.IMAGE_ID }}
-          REQ_APIGW_NAME:             ${{ secrets.APIGW_NAME }}
-          REQ_WEB_BUCKET:             ${{ secrets.WEB_BUCKET }}
-          REQ_S3_ENDPOINT:            ${{ secrets.S3_ENDPOINT }}
-          REQ_S3_ACCESS_KEY_ID:       ${{ secrets.S3_ACCESS_KEY_ID }}
-          REQ_S3_SECRET_ACCESS_KEY:   ${{ secrets.S3_SECRET_ACCESS_KEY }}
-        shell: bash
-        run: |
-          set -e
-          need(){ [ -n "${!1}" ] && [ "${!1}" != "null" ] || { echo "❌ Missing secret: $1"; exit 1; }; }
-          for v in REQ_GH_PAT REQ_YC_SA_JSON_CREDENTIALS REQ_YC_FOLDER_ID REQ_YC_CLOUD_ID REQ_SUBNET_ID REQ_IMAGE_ID REQ_APIGW_NAME REQ_WEB_BUCKET REQ_S3_ENDPOINT REQ_S3_ACCESS_KEY_ID REQ_S3_SECRET_ACCESS_KEY; do
-            need "$v"
-          done
-          echo "✅ All required secrets are set"
-
-  start-runner:
-    name: Start YC runner
-    needs: preflight
-    runs-on: ubuntu-latest
-    outputs:
-      label: ${{ steps.start.outputs.label }}
-      instance-id: ${{ steps.start.outputs.instance-id }}
-    steps:
-      - name: Start runner VM in YC
-        id: start
-        uses: yc-actions/yc-github-runner@v2
-        with:
-          mode: start
-          # ОБЯЗАТЕЛЬНО: токен GitHub с правами repo/workflow (и admin на репо/организацию)
-          github-token:               ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          # ОБЯЗАТЕЛЬНО: ключ сервисного аккаунта ЯО (сырой JSON)
-          yc-sa-json-credentials:     ${{ secrets.YC_SA_JSON_CREDENTIALS }}
-          folder-id:                  ${{ secrets.YC_FOLDER_ID }}
-          subnet-id:                  ${{ secrets.SUBNET_ID }}
-          image-id:                   ${{ secrets.IMAGE_ID }}   # Ubuntu LTS из standard-images
-          cores: 2
-          memory: 4GB
-          core-fraction: 100
-          ttl: PT2H
-
   deploy:
-    name: Deploy backend+gateway+frontend
-    needs: start-runner
-    runs-on: ${{ needs.start-runner.outputs.label }}
-    timeout-minutes: 20
-    env:
-      YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
-      YC_CLOUD_ID:  ${{ secrets.YC_CLOUD_ID }}
-      APIGW_NAME:   ${{ secrets.APIGW_NAME }}
-      WEB_BUCKET:   ${{ secrets.WEB_BUCKET }}
-      S3_ENDPOINT:  ${{ secrets.S3_ENDPOINT }}
-      BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
-      NO_PROXY: api.cloud.yandex.net,.yandexcloud.net
-      HTTPS_PROXY: ""
-      HTTP_PROXY: ""
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install basics
-        run: sudo apt-get update && sudo apt-get install -y jq zip curl netcat-openbsd
+      - name: Install base tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zip jq gettext-base
+          python3 -m pip install --user --upgrade awscli
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install YC CLI
         run: |
-          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh \
-            | bash -s -- -i "$HOME/yandex-cloud" -n
-          echo "$HOME/yandex-cloud/bin" >> $GITHUB_PATH
-          yc --version
+          set -euo pipefail
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+          echo "$HOME/yandex-cloud/bin" >> "$GITHUB_PATH"
 
-      - name: Auth YC (raw JSON secret)
+      - name: Configure YC CLI
+        id: configure
         env:
-          YC_SA_JSON_CREDENTIALS: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          YC_SERVICE_ACCOUNT_KEY_B64: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_B64 }}
+          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
         run: |
-          echo "$YC_SA_JSON_CREDENTIALS" > key.json
-          yc config set service-account-key key.json
-          yc config set cloud-id  "$YC_CLOUD_ID"
+          set -euo pipefail
+          if [ -z "${YC_SERVICE_ACCOUNT_KEY_B64:-}" ]; then
+            echo "YC_SERVICE_ACCOUNT_KEY_B64 secret is required" >&2
+            exit 1
+          fi
+          if [ -z "${YC_CLOUD_ID:-}" ]; then
+            echo "YC_CLOUD_ID secret is required" >&2
+            exit 1
+          fi
+          if [ -z "${YC_FOLDER_ID:-}" ]; then
+            echo "YC_FOLDER_ID secret is required" >&2
+            exit 1
+          fi
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          echo "$YC_SERVICE_ACCOUNT_KEY_B64" | base64 --decode > "$KEY_FILE"
+          yc config profile create github-deploy >/dev/null 2>&1 || yc config profile activate github-deploy
+          yc config set service-account-key "$KEY_FILE"
+          yc config set cloud-id "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
-          yc config set endpoint  api.cloud.yandex.net
+          SA_ID=$(jq -r '.service_account_id' "$KEY_FILE")
+          echo "service_account_id=$SA_ID" >> "$GITHUB_OUTPUT"
+          echo "key_file=$KEY_FILE" >> "$GITHUB_OUTPUT"
 
-      # ---------- Backend: Cloud Function ----------
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install server deps
-        working-directory: server
-        run: npm ci
-
-      - name: Zip server
-        run: (cd server && zip -r ../server.zip .)
-
-      - name: Ensure function exists
-        id: fn
+      - name: Deploy Cloud Function
+        id: deploy-function
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          DEMO_FLAG: ${{ env.DEMO_FLAG }}
         run: |
-          set -e
-          FN_NAME="form-networking-fn"
-          yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1 \
-            || yc serverless function create --name "$FN_NAME" --folder-id "$YC_FOLDER_ID"
-          FN_ID=$(yc serverless function get --name "$FN_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .id)
-          echo "id=$FN_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Deploy function version
-        run: |
+          set -euo pipefail
+          if [ -z "${BOT_TOKEN:-}" ]; then
+            echo "BOT_TOKEN secret is required" >&2
+            exit 1
+          fi
+          DEMO_VALUE="${DEMO_FLAG:-true}"
+          FUNCTION_NAME_VALUE="${FUNCTION_NAME:-form-networking}"
+          yc serverless function get --name "$FUNCTION_NAME_VALUE" --format json >"$RUNNER_TEMP/function.json" 2>/dev/null || \
+            yc serverless function create --name "$FUNCTION_NAME_VALUE" >/dev/null
+          yc serverless function get --name "$FUNCTION_NAME_VALUE" --format json >"$RUNNER_TEMP/function.json"
+          FUNCTION_ID=$(jq -r '.id' "$RUNNER_TEMP/function.json")
+          echo "Deploying function $FUNCTION_NAME_VALUE ($FUNCTION_ID)"
           yc serverless function version create \
-            --function-id  "${{ steps.fn.outputs.id }}" \
+            --function-name "$FUNCTION_NAME_VALUE" \
             --runtime nodejs18 \
             --entrypoint index.handler \
             --memory 128m \
-            --execution-timeout 5s \
-            --environment BOT_TOKEN="${BOT_TOKEN}",DEMO=1 \
-            --source-path server.zip
+            --execution-timeout 10s \
+            --source-path ./server \
+            --environment BOT_TOKEN="$BOT_TOKEN" \
+            --environment DEMO="$DEMO_VALUE"
+          echo "function_id=$FUNCTION_ID" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Cloud Function ID::$FUNCTION_ID"
 
-      - name: Wait function ACTIVE
-        run: |
-          for i in {1..40}; do
-            st=$(yc serverless function version list \
-              --function-id "${{ steps.fn.outputs.id }}" \
-              --folder-id "$YC_FOLDER_ID" --format json | jq -r '.[-1].status')
-            [ "$st" = "ACTIVE" ] && exit 0
-            sleep 3
-          done
-          echo "Function version not ACTIVE"; exit 1
-
-      # ---------- API Gateway ----------
-      - name: Prepare OpenAPI with function id
-        run: |
-          cp infra/apigw-openapi.yaml apigw.yaml
-          sed -i "s|\${FUNCTION_ID}|${{ steps.fn.outputs.id }}|g" apigw.yaml
-          echo "== apigw.yaml ==" && cat apigw.yaml
-
-      - name: Resolve SA_ID (runtime for gateway)
-        id: sa
-        run: |
-          SA_ID=$(yc iam service-account get --name form-networking-sa --format json | jq -r '.id')
-          echo "id=$SA_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Create/Update API Gateway (idempotent)
-        id: gw
-        run: |
-          set -e
-          if yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" >/dev/null 2>&1; then
-            yc serverless api-gateway update \
-              --name "$APIGW_NAME" \
-              --folder-id "$YC_FOLDER_ID" \
-              --service-account-id "${{ steps.sa.outputs.id }}" \
-              --spec=apigw.yaml
-          else
-            yc serverless api-gateway create \
-              --name "$APIGW_NAME" \
-              --folder-id "$YC_FOLDER_ID" \
-              --service-account-id "${{ steps.sa.outputs.id }}" \
-              --spec=apigw.yaml
-          fi
-          GW_URL=$(yc serverless api-gateway get --name "$APIGW_NAME" --folder-id "$YC_FOLDER_ID" --format json | jq -r .domain)
-          echo "url=https://${GW_URL}" >> "$GITHUB_OUTPUT"
-          echo "API GW: https://${GW_URL}"
-
-      # ---------- Frontend ----------
-      - name: Inject API base URL into web/app.js
-        run: |
-          API_BASE="${{ steps.gw.outputs.url }}"
-          sed -i "s|%%API_BASE%%|$API_BASE|g" web/app.js
-          echo "API_BASE set to $API_BASE"
-
-      - name: Install AWS CLI
-        run: |
-          pip install --upgrade --user awscli
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Upload web to Object Storage
+      - name: Deploy API Gateway
+        id: deploy-apigw
         env:
-          AWS_ACCESS_KEY_ID:     ${{ secrets.S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          FUNCTION_ID: ${{ steps.deploy-function.outputs.function_id }}
         run: |
-          aws --endpoint-url "${S3_ENDPOINT}" s3 sync ./web "s3://${WEB_BUCKET}" --delete
-          echo "Frontend URL: https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
+          set -euo pipefail
+          if [ -z "${FUNCTION_ID:-}" ]; then
+            echo "Function ID is required" >&2
+            exit 1
+          fi
+          API_GATEWAY_NAME_VALUE="${API_GATEWAY_NAME:-form-networking-gw}"
+          SPEC_FILE="$RUNNER_TEMP/apigw.yaml"
+          export FUNCTION_ID
+          envsubst < infra/apigw-openapi.yaml > "$SPEC_FILE"
+          if yc serverless api-gateway get --name "$API_GATEWAY_NAME_VALUE" >/dev/null 2>&1; then
+            yc serverless api-gateway update --name "$API_GATEWAY_NAME_VALUE" --spec="$SPEC_FILE" >/dev/null
+          else
+            yc serverless api-gateway create --name "$API_GATEWAY_NAME_VALUE" --spec="$SPEC_FILE" >/dev/null
+          fi
+          yc serverless api-gateway get --name "$API_GATEWAY_NAME_VALUE" --format json >"$RUNNER_TEMP/apigw.json"
+          GATEWAY_ID=$(jq -r '.id' "$RUNNER_TEMP/apigw.json")
+          GATEWAY_DOMAIN=$(jq -r '.domain' "$RUNNER_TEMP/apigw.json")
+          API_BASE="https://$GATEWAY_DOMAIN"
+          echo "gateway_id=$GATEWAY_ID" >> "$GITHUB_OUTPUT"
+          echo "gateway_domain=$GATEWAY_DOMAIN" >> "$GITHUB_OUTPUT"
+          echo "api_base=$API_BASE" >> "$GITHUB_OUTPUT"
+          echo "::notice title=API Gateway::$API_BASE"
 
-      - name: Summary
+      - name: Publish web app
+        id: publish-web
+        env:
+          API_BASE: ${{ steps.deploy-apigw.outputs.api_base }}
+          SA_ID: ${{ steps.configure.outputs.service_account_id }}
         run: |
-          echo "✅ API Base URL : ${{ steps.gw.outputs.url }}"
-          echo "✅ Frontend URL : https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
+          set -euo pipefail
+          if [ -z "${STATIC_BUCKET:-}" ]; then
+            echo "YC_STATIC_BUCKET repository variable is required" >&2
+            exit 1
+          fi
+          if [ -z "${API_BASE:-}" ]; then
+            echo "API base URL is missing" >&2
+            exit 1
+          fi
+          WEB_TMP="$(mktemp -d)"
+          rsync -a --delete --exclude='.git*' web/ "$WEB_TMP/"
+          perl -0pi -e "s|%%API_BASE%%|$API_BASE|g" "$WEB_TMP/app.js"
+          ACCESS_KEY_JSON=$(yc iam access-key create --service-account-id "$SA_ID" --description "gh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --format json)
+          ACCESS_KEY_ID=$(echo "$ACCESS_KEY_JSON" | jq -r '.access_key.key_id')
+          ACCESS_SECRET=$(echo "$ACCESS_KEY_JSON" | jq -r '.secret')
+          echo "::add-mask::$ACCESS_SECRET"
+          cleanup() {
+            yc iam access-key delete --id "$ACCESS_KEY_ID" --quiet
+          }
+          trap cleanup EXIT
+          export AWS_ACCESS_KEY_ID="$ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$ACCESS_SECRET"
+          export AWS_DEFAULT_REGION="ru-central1"
+          AWS_ENDPOINT="https://storage.yandexcloud.net"
+          aws s3api create-bucket --bucket "$STATIC_BUCKET" --endpoint-url "$AWS_ENDPOINT" --create-bucket-configuration LocationConstraint=ru-central1 >/dev/null 2>&1 || true
+          aws s3api put-bucket-policy --bucket "$STATIC_BUCKET" --endpoint-url "$AWS_ENDPOINT" --policy "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::${STATIC_BUCKET}/*\"]}]}"
+          aws s3api put-bucket-website --bucket "$STATIC_BUCKET" --endpoint-url "$AWS_ENDPOINT" --website-configuration "{\"IndexDocument\":{\"Suffix\":\"index.html\"},\"ErrorDocument\":{\"Key\":\"index.html\"}}"
+          aws s3 sync "$WEB_TMP" "s3://$STATIC_BUCKET" --endpoint-url "$AWS_ENDPOINT" --delete --acl public-read --cache-control "public, max-age=60, s-maxage=300"
+          STATIC_URL="https://${STATIC_BUCKET}.website.yandexcloud.net"
+          echo "static_url=$STATIC_URL" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Static site::$STATIC_URL"
 
-  stop-runner:
-    name: Stop YC runner
-    needs: [start-runner, deploy]
-    if: ${{ always() && needs.start-runner.result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Stop runner VM
-        uses: yc-actions/yc-github-runner@v2
-        with:
-          mode: stop
-          github-token:               ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          yc-sa-json-credentials:     ${{ secrets.YC_SA_JSON_CREDENTIALS }}
-          label:       ${{ needs.start-runner.outputs.label }}
-          instance-id: ${{ needs.start-runner.outputs.instance-id }}
+      - name: Deployment summary
+        run: |
+          {
+            echo "## Deployment outputs"
+            echo
+            echo "- Cloud Function ID: ${{ steps.deploy-function.outputs.function_id }}"
+            echo "- API Gateway ID: ${{ steps.deploy-apigw.outputs.gateway_id }}"
+            echo "- API Gateway domain: ${{ steps.deploy-apigw.outputs.gateway_domain }}"
+            echo "- Static hosting URL: ${{ steps.publish-web.outputs.static_url }}"
+          } >> "$GITHUB_STEP_SUMMARY"
