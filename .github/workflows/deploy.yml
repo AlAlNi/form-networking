@@ -100,15 +100,21 @@ jobs:
         id: deploy-apigw
         env:
           FUNCTION_ID: ${{ steps.deploy-function.outputs.function_id }}
+          FUNCTION_INVOKER_SA_ID: ${{ steps.configure.outputs.service_account_id }}
         run: |
           set -euo pipefail
           if [ -z "${FUNCTION_ID:-}" ]; then
             echo "Function ID is required" >&2
             exit 1
           fi
+          if [ -z "${FUNCTION_INVOKER_SA_ID:-}" ]; then
+            echo "Function invoker service account ID is required" >&2
+            exit 1
+          fi
           API_GATEWAY_NAME_VALUE="${API_GATEWAY_NAME:-form-networking-gw}"
           SPEC_FILE="$RUNNER_TEMP/apigw.yaml"
           export FUNCTION_ID
+          export FUNCTION_INVOKER_SA_ID
           envsubst < infra/apigw-openapi.yaml > "$SPEC_FILE"
           if yc serverless api-gateway get --name "$API_GATEWAY_NAME_VALUE" >/dev/null 2>&1; then
             yc serverless api-gateway update --name "$API_GATEWAY_NAME_VALUE" --spec="$SPEC_FILE" >/dev/null
