@@ -23,8 +23,14 @@ Set the following repository variables to control the deployment targets:
 | -------- | ------- | ------- |
 | `YC_FUNCTION_NAME` | `form-networking` | Cloud Function name. |
 | `YC_API_GATEWAY_NAME` | `form-networking-gw` | API Gateway name. |
+| `YC_FUNCTION_INVOKER_SA_ID` | _(optional)_ | Service account ID used by API Gateway to invoke the function. |
 | `YC_STATIC_BUCKET` | _(required)_ | Object Storage bucket used for static hosting. |
 | `DEMO_FLAG` | `true` | Value passed to the `DEMO` environment variable. |
+
+`YC_FUNCTION_INVOKER_SA_ID` should reference a service account that lives in the
+target folder and has the `serverless.functions.invoker` role on the function
+exposed through the API Gateway. When omitted, the workflow falls back to the
+service account ID embedded in `YC_SERVICE_ACCOUNT_KEY_B64`.
 
 ## Workflow outputs
 

@@ -27,7 +27,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y zip jq gettext-base
-          python3 -m pip install --user --upgrade awscli
+          python3 -m pip install --user --upgrade awscli pyyaml
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install YC CLI
@@ -100,22 +100,57 @@ jobs:
         id: deploy-apigw
         env:
           FUNCTION_ID: ${{ steps.deploy-function.outputs.function_id }}
-          FUNCTION_INVOKER_SA_ID: ${{ steps.configure.outputs.service_account_id }}
+          FUNCTION_INVOKER_SA_ID: ${{ vars.YC_FUNCTION_INVOKER_SA_ID != '' && vars.YC_FUNCTION_INVOKER_SA_ID || steps.configure.outputs.service_account_id }}
+          FUNCTION_INVOKER_SA_ID_FROM_VAR: ${{ vars.YC_FUNCTION_INVOKER_SA_ID }}
+          FUNCTION_INVOKER_SA_ID_FROM_CONFIGURE: ${{ steps.configure.outputs.service_account_id }}
         run: |
           set -euo pipefail
           if [ -z "${FUNCTION_ID:-}" ]; then
             echo "Function ID is required" >&2
             exit 1
           fi
-          if [ -z "${FUNCTION_INVOKER_SA_ID:-}" ]; then
-            echo "Function invoker service account ID is required" >&2
+          if [ -z "${FUNCTION_INVOKER_SA_ID_FROM_VAR:-}" ] && [ -z "${FUNCTION_INVOKER_SA_ID_FROM_CONFIGURE:-}" ]; then
+            echo "Function invoker service account ID is required. Set YC_FUNCTION_INVOKER_SA_ID or provide a deployment key with the embedded ID." >&2
             exit 1
           fi
           API_GATEWAY_NAME_VALUE="${API_GATEWAY_NAME:-form-networking-gw}"
           SPEC_FILE="$RUNNER_TEMP/apigw.yaml"
-          export FUNCTION_ID
-          export FUNCTION_INVOKER_SA_ID
-          envsubst < infra/apigw-openapi.yaml > "$SPEC_FILE"
+          TEMPLATE_PATH="infra/apigw-openapi.yaml"
+          export SPEC_FILE TEMPLATE_PATH
+          python3 - <<'PY'
+import os
+from pathlib import Path
+
+import yaml
+
+function_id = os.environ["FUNCTION_ID"]
+invoker_sa_id = os.environ.get("FUNCTION_INVOKER_SA_ID", "").strip()
+spec_file = Path(os.environ["SPEC_FILE"])
+template_path = Path(os.environ["TEMPLATE_PATH"])
+
+with template_path.open("r", encoding="utf-8") as fh:
+    spec = yaml.safe_load(fh)
+
+paths = spec.get("paths", {})
+for path_item in paths.values():
+    if not isinstance(path_item, dict):
+        continue
+    for method_spec in path_item.values():
+        if not isinstance(method_spec, dict):
+            continue
+        integration = method_spec.get("x-yc-apigateway-integration")
+        if not isinstance(integration, dict):
+            continue
+        integration["function_id"] = function_id
+        if invoker_sa_id:
+            integration["service_account_id"] = invoker_sa_id
+        else:
+            integration.pop("service_account_id", None)
+
+spec_file.parent.mkdir(parents=True, exist_ok=True)
+with spec_file.open("w", encoding="utf-8") as fh:
+    yaml.safe_dump(spec, fh, sort_keys=False)
+PY
           if yc serverless api-gateway get --name "$API_GATEWAY_NAME_VALUE" >/dev/null 2>&1; then
             yc serverless api-gateway update --name "$API_GATEWAY_NAME_VALUE" --spec="$SPEC_FILE" >/dev/null
           else
