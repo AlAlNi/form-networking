@@ -118,39 +118,39 @@ jobs:
           TEMPLATE_PATH="infra/apigw-openapi.yaml"
           export SPEC_FILE TEMPLATE_PATH
           python3 - <<'PY'
-import os
-from pathlib import Path
+          import os
+          from pathlib import Path
 
-import yaml
+          import yaml
 
-function_id = os.environ["FUNCTION_ID"]
-invoker_sa_id = os.environ.get("FUNCTION_INVOKER_SA_ID", "").strip()
-spec_file = Path(os.environ["SPEC_FILE"])
-template_path = Path(os.environ["TEMPLATE_PATH"])
+          function_id = os.environ["FUNCTION_ID"]
+          invoker_sa_id = os.environ.get("FUNCTION_INVOKER_SA_ID", "").strip()
+          spec_file = Path(os.environ["SPEC_FILE"])
+          template_path = Path(os.environ["TEMPLATE_PATH"])
 
-with template_path.open("r", encoding="utf-8") as fh:
-    spec = yaml.safe_load(fh)
+          with template_path.open("r", encoding="utf-8") as fh:
+              spec = yaml.safe_load(fh)
 
-paths = spec.get("paths", {})
-for path_item in paths.values():
-    if not isinstance(path_item, dict):
-        continue
-    for method_spec in path_item.values():
-        if not isinstance(method_spec, dict):
-            continue
-        integration = method_spec.get("x-yc-apigateway-integration")
-        if not isinstance(integration, dict):
-            continue
-        integration["function_id"] = function_id
-        if invoker_sa_id:
-            integration["service_account_id"] = invoker_sa_id
-        else:
-            integration.pop("service_account_id", None)
+          paths = spec.get("paths", {})
+          for path_item in paths.values():
+              if not isinstance(path_item, dict):
+                  continue
+              for method_spec in path_item.values():
+                  if not isinstance(method_spec, dict):
+                      continue
+                  integration = method_spec.get("x-yc-apigateway-integration")
+                  if not isinstance(integration, dict):
+                      continue
+                  integration["function_id"] = function_id
+                  if invoker_sa_id:
+                      integration["service_account_id"] = invoker_sa_id
+                  else:
+                      integration.pop("service_account_id", None)
 
-spec_file.parent.mkdir(parents=True, exist_ok=True)
-with spec_file.open("w", encoding="utf-8") as fh:
-    yaml.safe_dump(spec, fh, sort_keys=False)
-PY
+          spec_file.parent.mkdir(parents=True, exist_ok=True)
+          with spec_file.open("w", encoding="utf-8") as fh:
+              yaml.safe_dump(spec, fh, sort_keys=False)
+          PY
           if yc serverless api-gateway get --name "$API_GATEWAY_NAME_VALUE" >/dev/null 2>&1; then
             yc serverless api-gateway update --name "$API_GATEWAY_NAME_VALUE" --spec="$SPEC_FILE" >/dev/null
           else
