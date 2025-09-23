@@ -3,15 +3,69 @@ info: { title: form-networking, version: 1.0.0 }
 paths:
   /health:
     get:
+      responses:
+        '200':
+          description: Health check result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
       x-yc-apigateway-integration:
         type: cloud_functions
         function_id: ${FUNCTION_ID}
   /api/applications:
     get:
+      responses:
+        '200':
+          description: Masked application list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    time:
+                      type: string
+                    name_mask:
+                      type: string
+                    user_mask:
+                      type: string
       x-yc-apigateway-integration:
         type: cloud_functions
         function_id: ${FUNCTION_ID}
     post:
+      responses:
+        '200':
+          description: Submission accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '400':
+          description: Invalid submission payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '401':
+          description: Missing or invalid authentication
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
       x-yc-apigateway-integration:
         type: cloud_functions
         function_id: ${FUNCTION_ID}
