@@ -5,13 +5,12 @@ on:
     branches: [ main ]
 
 jobs:
-  # 0) Проверяем, что все критичные секреты есть — иначе не тратим время
+  # 0) Проверяем критичные секреты (без требования PAT — т.к. есть фоллбэк)
   preflight:
     runs-on: ubuntu-latest
     steps:
       - name: Check required secrets
         env:
-          CHECK_GH_PAT:                 ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           CHECK_YC_SA_JSON_CREDENTIALS: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
           CHECK_YC_FOLDER_ID:           ${{ secrets.YC_FOLDER_ID }}
           CHECK_YC_CLOUD_ID:            ${{ secrets.YC_CLOUD_ID }}
@@ -26,12 +25,12 @@ jobs:
         run: |
           set -e
           need(){ [ -n "${!1}" ] && [ "${!1}" != "null" ] || { echo "❌ Missing secret: $1"; exit 1; }; }
-          for v in CHECK_GH_PAT CHECK_YC_SA_JSON_CREDENTIALS CHECK_YC_FOLDER_ID CHECK_YC_CLOUD_ID CHECK_SUBNET_ID CHECK_IMAGE_ID CHECK_APIGW_NAME CHECK_WEB_BUCKET CHECK_S3_ENDPOINT CHECK_S3_ACCESS_KEY_ID CHECK_S3_SECRET_ACCESS_KEY; do
+          for v in CHECK_YC_SA_JSON_CREDENTIALS CHECK_YC_FOLDER_ID CHECK_YC_CLOUD_ID CHECK_SUBNET_ID CHECK_IMAGE_ID CHECK_APIGW_NAME CHECK_WEB_BUCKET CHECK_S3_ENDPOINT CHECK_S3_ACCESS_KEY_ID CHECK_S3_SECRET_ACCESS_KEY; do
             need "$v"
           done
           echo "✅ All required secrets are set"
 
-  # 1) Поднимаем временный раннер в Яндекс Облаке
+  # 1) Поднимаем временный раннер в ЯО
   start-runner:
     name: Start YC runner
     needs: preflight
@@ -40,17 +39,26 @@ jobs:
       label: ${{ steps.start.outputs.label }}
       instance-id: ${{ steps.start.outputs.instance-id }}
     steps:
+      - name: Prepare GitHub token (PAT -> builtin fallback)
+        shell: bash
+        env:
+          GH_PAT:     ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          GH_BUILTIN: ${{ github.token }}
+        run: |
+          TOK="${GH_PAT:-$GH_BUILTIN}"
+          echo "GH_TOKEN_INPUT=$TOK" >> "$GITHUB_ENV"
+          if [ -n "$GH_PAT" ]; then echo "Using PAT"; else echo "Using built-in GITHUB_TOKEN"; fi
+
       - name: Start runner VM in YC
         id: start
         uses: yc-actions/yc-github-runner@v2
         with:
           mode: start
-          # ВАЖНО: оба входа ниже ОБЯЗАТЕЛЬНЫ
-          github-token:               ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          github-token:               ${{ env.GH_TOKEN_INPUT }}           # <-- Больше не пустой
           yc-sa-json-credentials:     ${{ secrets.YC_SA_JSON_CREDENTIALS }}
           folder-id:                  ${{ secrets.YC_FOLDER_ID }}
           subnet-id:                  ${{ secrets.SUBNET_ID }}
-          image-id:                   ${{ secrets.IMAGE_ID }}   # Ubuntu LTS из standard-images
+          image-id:                   ${{ secrets.IMAGE_ID }}              # ubuntu LTS (standard-images)
           cores: 2
           memory: 4GB
           core-fraction: 100
@@ -70,7 +78,6 @@ jobs:
       WEB_BUCKET:   ${{ secrets.WEB_BUCKET }}
       S3_ENDPOINT:  ${{ secrets.S3_ENDPOINT }}
       BOT_TOKEN:    ${{ secrets.BOT_TOKEN }}
-      # отключаем прокси на раннере
       NO_PROXY: api.cloud.yandex.net,.yandexcloud.net
       HTTPS_PROXY: ""
       HTTP_PROXY: ""
@@ -210,12 +217,21 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
+      - name: Prepare GitHub token (PAT -> builtin fallback)
+        shell: bash
+        env:
+          GH_PAT:     ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          GH_BUILTIN: ${{ github.token }}
+        run: |
+          TOK="${GH_PAT:-$GH_BUILTIN}"
+          echo "GH_TOKEN_INPUT=$TOK" >> "$GITHUB_ENV"
+          if [ -n "$GH_PAT" ]; then echo "Using PAT"; else echo "Using built-in GITHUB_TOKEN"; fi
+
       - name: Stop runner VM
         uses: yc-actions/yc-github-runner@v2
         with:
           mode: stop
-          # ВАЖНО: те же два входа тоже ОБЯЗАТЕЛЬНЫ
-          github-token:               ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          github-token:               ${{ env.GH_TOKEN_INPUT }}           # <-- теперь точно есть
           yc-sa-json-credentials:     ${{ secrets.YC_SA_JSON_CREDENTIALS }}
           label:       ${{ needs.start-runner.outputs.label }}
           instance-id: ${{ needs.start-runner.outputs.instance-id }}
