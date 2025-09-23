@@ -5,9 +5,36 @@ on:
     branches: [ main ]
 
 jobs:
+  # 0) Проверяем, что все критичные секреты есть — иначе не тратим время
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets
+        env:
+          CHECK_GH_PAT:                 ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          CHECK_YC_SA_JSON_CREDENTIALS: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          CHECK_YC_FOLDER_ID:           ${{ secrets.YC_FOLDER_ID }}
+          CHECK_YC_CLOUD_ID:            ${{ secrets.YC_CLOUD_ID }}
+          CHECK_SUBNET_ID:              ${{ secrets.SUBNET_ID }}
+          CHECK_IMAGE_ID:               ${{ secrets.IMAGE_ID }}
+          CHECK_APIGW_NAME:             ${{ secrets.APIGW_NAME }}
+          CHECK_WEB_BUCKET:             ${{ secrets.WEB_BUCKET }}
+          CHECK_S3_ENDPOINT:            ${{ secrets.S3_ENDPOINT }}
+          CHECK_S3_ACCESS_KEY_ID:       ${{ secrets.S3_ACCESS_KEY_ID }}
+          CHECK_S3_SECRET_ACCESS_KEY:   ${{ secrets.S3_SECRET_ACCESS_KEY }}
+        shell: bash
+        run: |
+          set -e
+          need(){ [ -n "${!1}" ] && [ "${!1}" != "null" ] || { echo "❌ Missing secret: $1"; exit 1; }; }
+          for v in CHECK_GH_PAT CHECK_YC_SA_JSON_CREDENTIALS CHECK_YC_FOLDER_ID CHECK_YC_CLOUD_ID CHECK_SUBNET_ID CHECK_IMAGE_ID CHECK_APIGW_NAME CHECK_WEB_BUCKET CHECK_S3_ENDPOINT CHECK_S3_ACCESS_KEY_ID CHECK_S3_SECRET_ACCESS_KEY; do
+            need "$v"
+          done
+          echo "✅ All required secrets are set"
+
   # 1) Поднимаем временный раннер в Яндекс Облаке
   start-runner:
     name: Start YC runner
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       label: ${{ steps.start.outputs.label }}
@@ -18,11 +45,12 @@ jobs:
         uses: yc-actions/yc-github-runner@v2
         with:
           mode: start
-          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}   # сырой JSON ключа SA
-          github-token:               ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }} # GitHub PAT (scope: repo)
+          # ВАЖНО: оба входа ниже ОБЯЗАТЕЛЬНЫ
+          github-token:               ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          yc-sa-json-credentials:     ${{ secrets.YC_SA_JSON_CREDENTIALS }}
           folder-id:                  ${{ secrets.YC_FOLDER_ID }}
-          subnet-id:                  ${{ secrets.SUBNET_ID }}               # напр.: e9b88fcnifb1n74c80ds
-          image-id:                   ${{ secrets.IMAGE_ID }}                # Ubuntu LTS из standard-images
+          subnet-id:                  ${{ secrets.SUBNET_ID }}
+          image-id:                   ${{ secrets.IMAGE_ID }}   # Ubuntu LTS из standard-images
           cores: 2
           memory: 4GB
           core-fraction: 100
@@ -175,13 +203,6 @@ jobs:
           echo "✅ API Base URL : ${{ steps.gw.outputs.url }}"
           echo "✅ Frontend URL : https://storage.yandexcloud.net/${WEB_BUCKET}/index.html"
 
-      - name: Upload YC trace logs (if failed)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: yc-traces
-          path: /home/runner/.config/yandex-cloud/logs/*.txt
-
   # 3) Гасим раннер при любом исходе
   stop-runner:
     name: Stop YC runner
@@ -193,7 +214,8 @@ jobs:
         uses: yc-actions/yc-github-runner@v2
         with:
           mode: stop
-          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
-          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          label: ${{ needs.start-runner.outputs.label }}
+          # ВАЖНО: те же два входа тоже ОБЯЗАТЕЛЬНЫ
+          github-token:               ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          yc-sa-json-credentials:     ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          label:       ${{ needs.start-runner.outputs.label }}
           instance-id: ${{ needs.start-runner.outputs.instance-id }}
