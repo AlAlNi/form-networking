@@ -1,0 +1,51 @@
+name: CD - API Gateway
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - ".github/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  FOLDER_ID: b1gr0igqr38nt8rm70li
+  SA_ID: ajepvcf5o5fl77h8b2cf
+  GATEWAY_NAME: form-networking-gw
+  OPENAPI_FILE: apigateway/openapi.yaml
+
+jobs:
+  deploy-gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # Если деплоишь из ДРУГОГО приватного репозитория — используй PAT:
+      # - name: Checkout (external)
+      #   uses: actions/checkout@v4
+      #   with:
+      #     repository: AlAlNi/form-networking
+      #     ref: main
+      #     token: ${{ secrets.CI_REPO_TOKEN }}
+      #     fetch-depth: 1
+
+      - name: Validate OpenAPI exists
+        run: |
+          test -f "${{ env.OPENAPI_FILE }}" || { echo "OpenAPI spec not found: ${{ env.OPENAPI_FILE }}"; exit 1; }
+
+      - name: Deploy API Gateway
+        uses: yc-actions/yc-api-gateway-deploy@v3.0.0
+        with:
+          yc-sa-id: ${{ env.SA_ID }}
+          folder-id: ${{ env.FOLDER_ID }}
+          gateway-name: ${{ env.GATEWAY_NAME }}
+          openapi-spec: ${{ env.OPENAPI_FILE }}
+
+      - name: Done
+        run: echo "API Gateway ${{ env.GATEWAY_NAME }} deployed"
