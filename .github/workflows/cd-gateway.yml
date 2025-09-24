@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read        # чтобы checkout работал
-  id-token: write       # обязательно для OIDC
+  contents: read
+  id-token: write   # обязательно для OIDC
 
 env:
   FOLDER_ID: b1gr0igqr38nt8rm70li
@@ -26,8 +26,8 @@ jobs:
         with:
           fetch-depth: 1
 
-      # Если openapi лежит в другом приватном репо — вместо блока выше используй этот,
-      # и добавь PAT в секрет CI_REPO_TOKEN (scope: repo):
+      # Если OpenAPI лежит в другом приватном репозитории — используй этот блок вместо верхнего
+      # и добавь PAT (scope: repo) в секрет CI_REPO_TOKEN:
       # - name: Checkout external repo
       #   uses: actions/checkout@v4
       #   with:
@@ -38,10 +38,11 @@ jobs:
 
       - name: Sanity echo
         run: |
-          echo "Folder: $FOLDER_ID"
-          echo "SA:     $SA_ID"
-          ls -la $(dirname "$OPENAPI_FILE") || true
-          test -f "$OPENAPI_FILE" || { echo "OpenAPI not found at $OPENAPI_FILE"; exit 1; }
+          echo "FOLDER_ID=${FOLDER_ID}"
+          echo "SA_ID=${SA_ID}"
+          echo "OPENAPI_FILE=${OPENAPI_FILE}"
+          ls -la "$(dirname "${OPENAPI_FILE}")" || true
+          test -f "${OPENAPI_FILE}" || { echo "OpenAPI not found: ${OPENAPI_FILE}"; exit 1; }
 
       - name: Deploy API Gateway
         uses: yc-actions/yc-api-gateway-deploy@v3.0.0
@@ -52,4 +53,4 @@ jobs:
           openapi-spec: ${{ env.OPENAPI_FILE }}
 
       - name: Done
-        run: echo "API Gateway $GATEWAY_NAME deployed"
+        run: echo "API Gateway ${GATEWAY_NAME} deployed"
