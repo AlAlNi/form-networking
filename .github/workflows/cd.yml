@@ -92,6 +92,12 @@ jobs:
           node infra/render-apigw.mjs infra/apigw-openapi.yaml apigw-openapi.resolved.yaml \
             --function-id "${FUNCTION_ID}" "${extra[@]}"
 
+      - name: Debug SA selection
+        run: |
+          set -euo pipefail
+          echo "Using YC_SA_ID=${YC_SA_ID}"
+          echo "FUNCTION_INVOKER_SA_ID=${FUNCTION_INVOKER_SA_ID}"
+
       - name: Deploy API Gateway
         id: deploy-gateway
         uses: yc-actions/yc-api-gateway-deploy@v3.0.0
@@ -100,6 +106,12 @@ jobs:
           folder-id: ${{ env.YC_FOLDER_ID }}
           gateway-name: ${{ env.YC_API_GATEWAY_NAME }}
           spec-file: apigw-openapi.resolved.yaml
+
+      - name: Dump YC CLI logs
+        if: ${{ failure() }}
+        run: |
+          set -euo pipefail
+          find ~/.config/yandex-cloud/logs -type f -name 'yc-*' -print -exec cat {} \;
 
       - name: Prepare static client assets
         if: ${{ env.STATIC_BUCKET != '' }}

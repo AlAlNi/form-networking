@@ -18,8 +18,8 @@ paths:
                     description: Human-readable health status.
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
   /:
     get:
       responses:
@@ -31,16 +31,16 @@ paths:
                 type: string
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
     head:
       responses:
         '200':
           description: Static client headers
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
   /index.html:
     get:
       responses:
@@ -52,16 +52,16 @@ paths:
                 type: string
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
     head:
       responses:
         '200':
           description: Static client headers
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
   /app.js:
     get:
       responses:
@@ -73,16 +73,16 @@ paths:
                 type: string
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
     head:
       responses:
         '200':
           description: Static application script headers
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
   /app.css:
     get:
       responses:
@@ -94,16 +94,16 @@ paths:
                 type: string
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
     head:
       responses:
         '200':
           description: Static application styles headers
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
   /api/applications:
     get:
       responses:
@@ -124,8 +124,8 @@ paths:
                       type: string
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
     post:
       responses:
         '200':
@@ -157,13 +157,13 @@ paths:
                     type: string
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
     options:
       responses:
         '204':
           description: CORS preflight
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4ech3uemd08l3r9ao46
-        service_account_id: ajepvcf5o5fl77h8b2cf
+        function_id: true
+
