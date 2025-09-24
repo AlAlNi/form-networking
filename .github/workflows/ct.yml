@@ -42,3 +42,5 @@ jobs:
           include: |
             **/*.json
             **/*.js
+            **/*.html
+            **/*.css

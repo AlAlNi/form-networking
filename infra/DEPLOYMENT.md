@@ -1,7 +1,7 @@
 # Deployment pipeline
 
 This repository ships an automated GitHub Actions workflow that deploys the
-Telegram bot backend, API Gateway specification and static web assets to Yandex
+Telegram bot backend, API Gateway specification and static web client to Yandex
 Cloud on every push to the `main` branch. For manual experiments the
 `deploy-apigateway.sh` helper can be used to create or update the API Gateway
 locally once the Cloud Function has been published.
@@ -26,13 +26,18 @@ Set the following repository variables to control the deployment targets:
 | `YC_FUNCTION_NAME` | `form-networking` | Cloud Function name. |
 | `YC_API_GATEWAY_NAME` | `form-networking-gw` | API Gateway name. |
 | `YC_FUNCTION_INVOKER_SA_ID` | _(optional)_ | Service account ID used by API Gateway to invoke the function. |
-| `YC_STATIC_BUCKET` | _(required)_ | Object Storage bucket used for static hosting. |
+| `YC_STATIC_BUCKET` | _(optional)_ | Object Storage bucket that serves the static web client. |
 | `DEMO_FLAG` | `true` | Value passed to the `DEMO` environment variable. |
 
 `YC_FUNCTION_INVOKER_SA_ID` should reference a service account that lives in the
 target folder and has the `serverless.functions.invoker` role on the function
 exposed through the API Gateway. When omitted, the workflow falls back to the
 service account ID embedded in `YC_SERVICE_ACCOUNT_KEY_B64`.
+
+When `YC_STATIC_BUCKET` is configured, the workflow renders
+`server/public/index.html` with the API Gateway domain and uploads all client
+assets from `server/public/` to that Object Storage bucket. Leave the variable
+empty to disable bucket uploads entirely.
 
 ## Manual gateway deployment
 
@@ -64,7 +69,7 @@ successful deployment:
 
 - Cloud Function ID.
 - API Gateway ID and domain (full public URL).
-- Static hosting URL for the web client.
+- Public URL that serves the embedded web client.
 
 These records can be used to document the `function_id` that is injected into
 `infra/apigw-openapi.yaml` during the deployment step.
