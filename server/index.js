@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { verifyInitData } from './tg-validate.js';
 import { DemoStore } from './storage.js';
 
@@ -11,6 +15,43 @@ const JSON_HEADERS = {
   ...CORS_HEADERS,
   'Content-Type': 'application/json',
 };
+
+const STATIC_HEADERS = {
+  ...CORS_HEADERS,
+  'Cache-Control': 'no-cache, no-store, must-revalidate',
+};
+
+const STATIC_DIR = join(dirname(fileURLToPath(import.meta.url)), 'public');
+
+const STATIC_CACHE = new Map();
+
+function readStatic(name) {
+  if (!STATIC_CACHE.has(name)) {
+    const filePath = join(STATIC_DIR, name);
+    STATIC_CACHE.set(name, readFileSync(filePath, 'utf8'));
+  }
+  return STATIC_CACHE.get(name);
+}
+
+let cachedIndex = { apiBase: null, body: null };
+
+function renderIndexHtml() {
+  const apiBase = process.env.API_BASE?.trim() || '';
+  if (cachedIndex.body && cachedIndex.apiBase === apiBase) {
+    return cachedIndex.body;
+  }
+  const template = readStatic('index.html');
+  const rendered = template.replaceAll('%%API_BASE%%', apiBase);
+  cachedIndex = { apiBase, body: rendered };
+  return rendered;
+}
+
+const STATIC_ROUTES = new Map([
+  ['/',            { file: 'index.html', contentType: 'text/html; charset=utf-8', dynamic: true }],
+  ['/index.html',  { file: 'index.html', contentType: 'text/html; charset=utf-8', dynamic: true }],
+  ['/app.css',     { file: 'app.css',    contentType: 'text/css; charset=utf-8' }],
+  ['/app.js',      { file: 'app.js',     contentType: 'application/javascript; charset=utf-8' }],
+]);
 
 const NO_CONTENT_RESPONSE = {
   statusCode: 204,
@@ -27,6 +68,19 @@ function jsonResponse(statusCode, payload, extraHeaders = {}) {
       ...extraHeaders,
     },
     body: JSON.stringify(payload),
+    isBase64Encoded: false,
+  };
+}
+
+function textResponse(statusCode, body, contentType, extraHeaders = {}) {
+  return {
+    statusCode,
+    headers: {
+      ...STATIC_HEADERS,
+      'Content-Type': contentType,
+      ...extraHeaders,
+    },
+    body,
     isBase64Encoded: false,
   };
 }
@@ -85,6 +139,20 @@ export async function handler(event = {}) {
 
   const path = normalizePath(event.rawPath || event.path || event.requestContext?.http?.path || '/');
   const headers = collectHeaders(event);
+
+  if ((method === 'GET' || method === 'HEAD') && STATIC_ROUTES.has(path)) {
+    const { file, contentType, dynamic } = STATIC_ROUTES.get(path);
+    try {
+      if (method === 'HEAD') {
+        return textResponse(200, '', contentType);
+      }
+      const body = dynamic ? renderIndexHtml() : readStatic(file);
+      return textResponse(200, body, contentType);
+    } catch (err) {
+      console.error('Failed to render static asset', err);
+      return errorResponse(500, 'static_error');
+    }
+  }
 
   if (method === 'GET' && path === '/health') {
     return jsonResponse(200, { ok: true });
