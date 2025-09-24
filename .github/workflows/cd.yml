@@ -111,7 +111,12 @@ jobs:
         if: ${{ failure() }}
         run: |
           set -euo pipefail
-          find ~/.config/yandex-cloud/logs -type f -name 'yc-*' -print -exec cat {} \;
+          log_dir="${HOME}/.config/yandex-cloud/logs"
+          if [[ ! -d "${log_dir}" ]]; then
+            echo "YC CLI log directory not found at ${log_dir}"
+            exit 0
+          fi
+          find "${log_dir}" -type f -name 'yc-*' -print -exec cat {} \;
 
       - name: Prepare static client assets
         if: ${{ env.STATIC_BUCKET != '' }}
