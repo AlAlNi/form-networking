@@ -8,6 +8,8 @@ on:
       - '.github/**'
       
   # Allows you to run this workflow manually from the Actions tab
+
+    # new
   workflow_dispatch:
 
 env:
@@ -40,4 +42,3 @@ jobs:
           include: |
             **/*.json
             **/*.js
-            
