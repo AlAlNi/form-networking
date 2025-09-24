@@ -1,0 +1,31 @@
+openapi: 3.0.0
+info:
+  title: form-networking gateway
+  version: 0.1.0
+  license:
+    name: MIT
+    url: https://opensource.org/license/mit/
+servers:
+  - url: https://cloud.yandex.com
+security: []
+paths:
+  /health:
+    get:
+      summary: Cloud Function health check
+      operationId: getHealth
+      responses:
+        '200':
+          description: Health check response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '400':
+          description: Bad request
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
