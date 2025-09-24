@@ -12,8 +12,8 @@ permissions:
   id-token: write   # обязательно для OIDC
 
 env:
-  FOLDER_ID: b1gr0igqr38nt8rm70li
-  SA_ID: ajepvcf5o5fl77h8b2cf
+  FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+  SA_ID: ${{ vars.YC_SA_ID_PROD || vars.YC_SA_ID_SHARED }}
   GATEWAY_NAME: form-networking-gw
   OPENAPI_TEMPLATE: apigateway/openapi.yaml
   OPENAPI_FILE: apigateway/openapi.resolved.yaml
@@ -56,7 +56,7 @@ jobs:
           echo "Resolving Cloud Function ID for '${FUNCTION_NAME}' in folder ${FOLDER_ID}"
           filter=$(printf 'name = "%s"' "${FUNCTION_NAME}")
           payload=$(jq -n --arg folder "${FOLDER_ID}" --arg filter "${filter}" '{folderId: $folder, filter: $filter}')
-          response=$(curl --fail --silent --show-error \
+          response=$(curl --silent --show-error \
             -H "Authorization: Bearer ${IAM_TOKEN}" \
             -H "Content-Type: application/json" \
             -X POST \
@@ -103,7 +103,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "${OPENAPI_FILE}")"
-          node infra/render-apigw.mjs "${OPENAPI_TEMPLATE}" "${OPENAPI_FILE}" --function-id "${FUNCTION_ID}"
+          extra=()
+          if [[ -n "${FUNCTION_INVOKER_SA_ID}" ]]; then
+            extra+=(--service-account-id "${FUNCTION_INVOKER_SA_ID}")
+          fi
+          node infra/render-apigw.mjs "${OPENAPI_TEMPLATE}" "${OPENAPI_FILE}" --function-id "${FUNCTION_ID}" "${extra[@]}"
 
       - name: Validate OpenAPI specification
         run: |
