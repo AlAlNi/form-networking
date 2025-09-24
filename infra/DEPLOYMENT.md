@@ -2,7 +2,9 @@
 
 This repository ships an automated GitHub Actions workflow that deploys the
 Telegram bot backend, API Gateway specification and static web assets to Yandex
-Cloud on every push to the `main` branch.
+Cloud on every push to the `main` branch. For manual experiments the
+`deploy-apigateway.sh` helper can be used to create or update the API Gateway
+locally once the Cloud Function has been published.
 
 ## Required secrets
 
@@ -31,6 +33,29 @@ Set the following repository variables to control the deployment targets:
 target folder and has the `serverless.functions.invoker` role on the function
 exposed through the API Gateway. When omitted, the workflow falls back to the
 service account ID embedded in `YC_SERVICE_ACCOUNT_KEY_B64`.
+
+## Manual gateway deployment
+
+To verify the API Gateway locally, publish the Cloud Function first and export
+its ID into the shell:
+
+```bash
+export FUNCTION_ID=... # yc serverless function get --name form-networking --format json | jq -r .id
+export YC_FOLDER_ID=...
+export YC_API_GATEWAY_NAME=form-networking-gw
+```
+
+When a dedicated invoker service account is required set
+`FUNCTION_INVOKER_SA_ID` (or `YC_FUNCTION_INVOKER_SA_ID`). Afterwards run:
+
+```bash
+./infra/deploy-apigateway.sh
+```
+
+The script renders `apigw-openapi.yaml` into `apigw-openapi.resolved.yaml` using
+the provided identifiers and calls `yc serverless api-gateway create` (or
+`update` when the gateway already exists). The final gateway description is
+printed in JSON format, including its public domain name.
 
 ## Workflow outputs
 
