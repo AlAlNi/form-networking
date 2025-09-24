@@ -20,7 +20,7 @@ All workflows request an OpenID Connect (OIDC) token with `id-token: write` perm
    | Account | Roles | When required |
    | --- | --- | --- |
    | Sandbox/Test deployer | `serverless.functions.admin` | Always |
-   | Production deployer | `serverless.functions.admin`, `serverless.apiGateway.editor` | Always |
+   | Production deployer | `serverless.functions.admin`, `api-gateway.editor` | Always |
    | Production deployer (static bucket uploads) | `storage.uploader` on the Object Storage bucket | Only if `YC_STATIC_BUCKET` is set |
    | API Gateway invoker (optional) | `serverless.functions.invoker` on the production function | When a dedicated invoker SA is desired |
 
@@ -42,7 +42,7 @@ All workflows request an OpenID Connect (OIDC) token with `id-token: write` perm
 
    PROD_ID=$(yc iam service-account get --name form-networking-prod --format json | jq -r .id)
    yc resource-manager folder add-access-binding "$FOLDER_ID" \
-     --role serverless.apiGateway.editor \
+     --role api-gateway.editor \
      --subject "serviceAccount:$PROD_ID"
    ```
 
