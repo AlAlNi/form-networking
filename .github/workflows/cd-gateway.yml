@@ -54,7 +54,7 @@ jobs:
             exit 1
           fi
           echo "Resolving Cloud Function ID for '${FUNCTION_NAME}' in folder ${FOLDER_ID}"
-          filter=$(printf "name = '%s'" "${FUNCTION_NAME}")
+          filter=$(printf 'name = "%s"' "${FUNCTION_NAME}")
           payload=$(jq -n --arg folder "${FOLDER_ID}" --arg filter "${filter}" '{folderId: $folder, filter: $filter}')
           response=$(curl --fail --silent --show-error \
             -H "Authorization: Bearer ${IAM_TOKEN}" \
