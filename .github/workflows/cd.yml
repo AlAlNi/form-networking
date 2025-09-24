@@ -92,6 +92,14 @@ jobs:
           node infra/render-apigw.mjs infra/apigw-openapi.yaml apigw-openapi.resolved.yaml \
             --function-id "${FUNCTION_ID}" "${extra[@]}"
 
+      - name: Inspect rendered API Gateway spec
+        run: |
+          set -euo pipefail
+          echo "Function ID from render step:"
+          grep -m1 'function_id:' apigw-openapi.resolved.yaml
+          echo "First part of the rendered spec:"
+          sed -n '1,40p' apigw-openapi.resolved.yaml
+
       - name: Debug SA selection
         run: |
           set -euo pipefail
