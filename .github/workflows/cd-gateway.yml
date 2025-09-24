@@ -15,7 +15,10 @@ env:
   FOLDER_ID: b1gr0igqr38nt8rm70li
   SA_ID: ajepvcf5o5fl77h8b2cf
   GATEWAY_NAME: form-networking-gw
-  OPENAPI_FILE: apigateway/openapi.yaml
+  OPENAPI_TEMPLATE: apigateway/openapi.yaml
+  OPENAPI_FILE: apigateway/openapi.resolved.yaml
+  FUNCTION_ID: ${{ vars.YC_FUNCTION_ID || '' }}
+  FUNCTION_INVOKER_SA_ID: ${{ vars.YC_FUNCTION_INVOKER_SA_ID || '' }}
 
 jobs:
   deploy-gateway:
@@ -36,13 +39,31 @@ jobs:
       #     token: ${{ secrets.CI_REPO_TOKEN }}
       #     fetch-depth: 1
 
-      - name: Sanity echo
+      - name: Sanity checks
         run: |
+          set -euo pipefail
           echo "FOLDER_ID=${FOLDER_ID}"
           echo "SA_ID=${SA_ID}"
+          echo "GATEWAY_NAME=${GATEWAY_NAME}"
+          echo "OPENAPI_TEMPLATE=${OPENAPI_TEMPLATE}"
           echo "OPENAPI_FILE=${OPENAPI_FILE}"
-          ls -la "$(dirname "${OPENAPI_FILE}")" || true
-          test -f "${OPENAPI_FILE}" || { echo "OpenAPI not found: ${OPENAPI_FILE}"; exit 1; }
+          if [[ -z "${FUNCTION_ID}" ]]; then
+            echo "FUNCTION_ID is not configured; set the YC_FUNCTION_ID repository variable." >&2
+            exit 1
+          fi
+          ls -la "$(dirname "${OPENAPI_TEMPLATE}")" || true
+          test -f "${OPENAPI_TEMPLATE}" || { echo "OpenAPI template not found: ${OPENAPI_TEMPLATE}" >&2; exit 1; }
+
+      - name: Render API Gateway specification
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "${OPENAPI_FILE}")"
+          node infra/render-apigw.mjs "${OPENAPI_TEMPLATE}" "${OPENAPI_FILE}" --function-id "${FUNCTION_ID}"
+
+      - name: Validate OpenAPI specification
+        run: |
+          set -euo pipefail
+          npx --yes @redocly/cli@latest lint "${OPENAPI_FILE}"
 
       - name: Deploy API Gateway
         uses: yc-actions/yc-api-gateway-deploy@v3.0.0
@@ -50,7 +71,7 @@ jobs:
           yc-sa-id: ${{ env.SA_ID }}
           folder-id: ${{ env.FOLDER_ID }}
           gateway-name: ${{ env.GATEWAY_NAME }}
-          openapi-spec: ${{ env.OPENAPI_FILE }}
+          spec-file: ${{ env.OPENAPI_FILE }}
 
       - name: Done
         run: echo "API Gateway ${GATEWAY_NAME} deployed"
