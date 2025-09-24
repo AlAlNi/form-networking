@@ -40,3 +40,4 @@ jobs:
           include: |
             **/*.json
             **/*.js
+            
