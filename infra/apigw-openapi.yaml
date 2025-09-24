@@ -17,6 +17,90 @@ paths:
         type: cloud_functions
         function_id: ${FUNCTION_ID}
         service_account_id: ${FUNCTION_INVOKER_SA_ID}
+  /:
+    get:
+      responses:
+        '200':
+          description: Static client shell
+          content:
+            text/html:
+              schema:
+                type: string
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
+    head:
+      responses:
+        '200':
+          description: Static client headers
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
+  /index.html:
+    get:
+      responses:
+        '200':
+          description: Static client shell
+          content:
+            text/html:
+              schema:
+                type: string
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
+    head:
+      responses:
+        '200':
+          description: Static client headers
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
+  /app.js:
+    get:
+      responses:
+        '200':
+          description: Static application script
+          content:
+            application/javascript:
+              schema:
+                type: string
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
+    head:
+      responses:
+        '200':
+          description: Static application script headers
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
+  /app.css:
+    get:
+      responses:
+        '200':
+          description: Static application styles
+          content:
+            text/css:
+              schema:
+                type: string
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
+    head:
+      responses:
+        '200':
+          description: Static application styles headers
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: ${FUNCTION_ID}
+        service_account_id: ${FUNCTION_INVOKER_SA_ID}
     options:
       responses:
         '204':

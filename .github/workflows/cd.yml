@@ -18,7 +18,7 @@ on:
 env:
   FOLDER_ID: b1gr0igqr38nt8rm70li
   SA_ID: ajepvcf5o5fl77h8b2cf
-  FUNCTION_NAME: crop-image-prod
+  FUNCTION_NAME: form-networking
   FUNCTION_RUNTIME: nodejs22
   FUNCTION_ENTRYPOINT: index.handler
   FUNCTION_MEMORY: 128Mb
@@ -44,3 +44,5 @@ jobs:
           include: |
             **/*.json
             **/*.js
+            **/*.html
+            **/*.css
