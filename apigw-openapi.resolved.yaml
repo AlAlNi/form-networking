@@ -1,4 +1,5 @@
-﻿openapi: 3.0.0
+# Generated via infra/render-apigw.mjs from infra/apigw-openapi.yaml
+openapi: 3.0.0
 info: { title: form-networking, version: 1.0.0 }
 paths:
   /health:
@@ -15,7 +16,14 @@ paths:
                     type: boolean
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4e68f622koeue2ltf8k
+        function_id: example-function-id
+    options:
+      responses:
+        '204':
+          description: CORS preflight
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: example-function-id
   /api/applications:
     get:
       responses:
@@ -36,7 +44,7 @@ paths:
                       type: string
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4e68f622koeue2ltf8k
+        function_id: example-function-id
     post:
       responses:
         '200':
@@ -68,4 +76,11 @@ paths:
                     type: string
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4e68f622koeue2ltf8k
+        function_id: example-function-id
+    options:
+      responses:
+        '204':
+          description: CORS preflight
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: example-function-id
