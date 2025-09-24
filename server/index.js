@@ -155,7 +155,7 @@ export async function handler(event = {}) {
   }
 
   if (method === 'GET' && path === '/health') {
-    return jsonResponse(200, { ok: true });
+    return jsonResponse(200, { ok: true, message: 'healthy' });
   }
 
   if (path === '/api/applications') {

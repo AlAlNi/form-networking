@@ -13,6 +13,9 @@ paths:
                 properties:
                   ok:
                     type: boolean
+                  message:
+                    type: string
+                    description: Human-readable health status.
       x-yc-apigateway-integration:
         type: cloud_functions
         function_id: ${FUNCTION_ID}
