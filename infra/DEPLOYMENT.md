@@ -1,43 +1,10 @@
 # Deployment pipeline
 
-This repository ships an automated GitHub Actions workflow that deploys the
-Telegram bot backend, API Gateway specification and static web client to Yandex
-Cloud on every push to the `main` branch. For manual experiments the
-`deploy-apigateway.sh` helper can be used to create or update the API Gateway
-locally once the Cloud Function has been published.
-
-## Required secrets
-
-Configure the following repository secrets before enabling the workflow:
-
-| Secret | Description |
-| ------ | ----------- |
-| `YC_SERVICE_ACCOUNT_KEY_B64` | Base64 encoded service account key similar to `key.json.b64.txt`. |
-| `YC_CLOUD_ID` | Target cloud ID. |
-| `YC_FOLDER_ID` | Target folder ID. |
-| `BOT_TOKEN` | Telegram bot token injected into the function environment. |
-
-## Repository variables
-
-Set the following repository variables to control the deployment targets:
-
-| Variable | Default | Purpose |
-| -------- | ------- | ------- |
-| `YC_FUNCTION_NAME` | `form-networking` | Cloud Function name. |
-| `YC_API_GATEWAY_NAME` | `form-networking-gw` | API Gateway name. |
-| `YC_FUNCTION_INVOKER_SA_ID` | _(optional)_ | Service account ID used by API Gateway to invoke the function. |
-| `YC_STATIC_BUCKET` | _(optional)_ | Object Storage bucket that serves the static web client. |
-| `DEMO_FLAG` | `true` | Value passed to the `DEMO` environment variable. |
-
-`YC_FUNCTION_INVOKER_SA_ID` should reference a service account that lives in the
-target folder and has the `serverless.functions.invoker` role on the function
-exposed through the API Gateway. When omitted, the workflow falls back to the
-service account ID embedded in `YC_SERVICE_ACCOUNT_KEY_B64`.
-
-When `YC_STATIC_BUCKET` is configured, the workflow renders
-`server/public/index.html` with the API Gateway domain and uploads all client
-assets from `server/public/` to that Object Storage bucket. Leave the variable
-empty to disable bucket uploads entirely.
+The GitHub Actions workflows described in `README.md` deploy the Cloud Function,
+API Gateway and optional static client to Yandex Cloud. They rely on OIDC
+federation (`id-token: write`) instead of long-lived service account keys. Use
+this file as a quick reference when you need to run the gateway deployment
+locally.
 
 ## Manual gateway deployment
 
@@ -45,8 +12,8 @@ To verify the API Gateway locally, publish the Cloud Function first and export
 its ID into the shell:
 
 ```bash
-export FUNCTION_ID=... # yc serverless function get --name form-networking --format json | jq -r .id
-export YC_FOLDER_ID=...
+export FUNCTION_ID=$(yc serverless function get --name form-networking --format json | jq -r .id)
+export YC_FOLDER_ID=<your-folder-id>
 export YC_API_GATEWAY_NAME=form-networking-gw
 ```
 
@@ -64,42 +31,26 @@ printed in JSON format, including its public domain name.
 
 ## Workflow outputs
 
-The workflow logs and exports the following values in the step summary after a
-successful deployment:
+The production workflow (`cd.yml`) writes the following values to the step
+summary after a successful deployment:
 
 - Cloud Function ID.
-- API Gateway ID and domain (full public URL).
-- Public URL that serves the embedded web client.
+- API Gateway ID and public domain.
+- Public URL that serves the embedded web client (when `YC_STATIC_BUCKET` is
+  configured).
 
-These records can be used to document the `function_id` that is injected into
-`infra/apigw-openapi.yaml` during the deployment step.
+Use these values to keep infrastructure documentation in sync with the current
+revision.
 
 ## Manual verification
 
-To inspect the currently deployed resources manually, run the following commands
-with `yc` once authenticated with the service account key:
+To inspect the deployed resources manually, run the following commands once the
+`yc` CLI is authenticated via OIDC or a short-lived token:
 
 ```bash
 yc serverless function get --name ${YC_FUNCTION_NAME:-form-networking} --format json
 yc serverless api-gateway get --name ${YC_API_GATEWAY_NAME:-form-networking-gw} --format json
 ```
 
-Both commands output the resource IDs that can be stored in internal
-documentation if needed.
-
-## API Gateway inventory
-
-| Attribute | Value |
-| --------- | ----- |
-| Gateway ID | `d5du79p42aeq8p12sr1t` |
-| Public domain | `https://d5du79p42aeq8p12sr1t.bixf7e87.apigw.yandexcloud.net` |
-
-### Reachability log
-
-- 2025-09-24T11:42:31Z &mdash; `curl -I https://d5du79p42aeq8p12sr1t.bixf7e87.apigw.yandexcloud.net` → `403 Forbidden`.
-  The request was blocked by the outbound network proxy, so verification of the
-  API Gateway status must be repeated from an environment with direct access.
-- `yc serverless api-gateway get --id d5du79p42aeq8p12sr1t --format json`
-  could not be executed because the `yc` CLI is missing in this environment and
-  downloading it is rejected by the proxy. Run the command from a workstation
-  that already has `yc` installed to confirm the gateway status (`ACTIVE`).
+For a full description of the CI/CD setup, required service accounts and GitHub
+settings, see the "form-networking CI/CD" section in the repository README.

@@ -1,44 +1,81 @@
+name: CI Deploy
+
 permissions:
-  id-token: write # This is required for requesting the JWT
+  contents: read
+  id-token: write
 
-on: 
+on:
   push:
-    branches: [ feature** ]
+    branches:
+      - 'feature/**'
     paths-ignore:
-      - '.github/**'
-
-  # Allows you to run this workflow manually from the Actions tab
+      - 'docs/**'
+      - 'README.md'
   workflow_dispatch:
 
 env:
-  FOLDER_ID: b1gr0igqr38nt8rm70li
-  SA_ID: aje1q6u801uvrusg02t6
-  FUNCTION_NAME: crop-image-integration
-  FUNCTION_RUNTIME: nodejs22
-  FUNCTION_ENTRYPOINT: index.handler
-  FUNCTION_MEMORY: 128Mb
-  FUNCTION_SOURCEROOT: src/functions/crop-image/
-  
+  YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+  YC_SA_ID: ${{ vars.YC_SA_ID_SANDBOX || vars.YC_SA_ID_SHARED }}
+  FUNCTION_NAME: ${{ vars.YC_FUNCTION_NAME_SANDBOX || 'form-networking-sandbox' }}
+  FUNCTION_RUNTIME: ${{ vars.YC_FUNCTION_RUNTIME || 'nodejs22' }}
+  FUNCTION_ENTRYPOINT: ${{ vars.YC_FUNCTION_ENTRYPOINT || 'index.handler' }}
+  FUNCTION_MEMORY: ${{ vars.YC_FUNCTION_MEMORY_SANDBOX || '256Mb' }}
+  FUNCTION_SOURCEROOT: ${{ vars.YC_FUNCTION_SOURCEROOT || 'server/' }}
+
+concurrency:
+  group: sandbox-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    environment: preprod
+  deploy:
+    name: Deploy sandbox function
     runs-on: ubuntu-latest
-    
+    environment: sandbox
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Deploy Function
-        id: sls-func
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${YC_FOLDER_ID:-}" ]] || missing+=("YC_FOLDER_ID")
+          [[ -n "${YC_SA_ID:-}" ]] || missing+=("YC_SA_ID_SANDBOX or YC_SA_ID_SHARED")
+          [[ -n "${FUNCTION_NAME:-}" ]] || missing+=("YC_FUNCTION_NAME_SANDBOX")
+          if (( ${#missing[@]} )); then
+            echo "::error::Missing required variables: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Deploy Cloud Function
+        id: deploy
         uses: yc-actions/yc-sls-function@v3.1.0
         with:
-          yc-sa-id: ${{env.SA_ID}}
-          folder-id: ${{env.FOLDER_ID}}
-          function-name: ${{env.FUNCTION_NAME}}
-          runtime: ${{env.FUNCTION_RUNTIME}}
-          memory: ${{env.FUNCTION_MEMORY}}
-          entrypoint: ${{env.FUNCTION_ENTRYPOINT}}
-          source-root: ${{env.FUNCTION_SOURCEROOT}}
+          yc-sa-id: ${{ env.YC_SA_ID }}
+          folder-id: ${{ env.YC_FOLDER_ID }}
+          function-name: ${{ env.FUNCTION_NAME }}
+          runtime: ${{ env.FUNCTION_RUNTIME }}
+          memory: ${{ env.FUNCTION_MEMORY }}
+          entrypoint: ${{ env.FUNCTION_ENTRYPOINT }}
+          source-root: ${{ env.FUNCTION_SOURCEROOT }}
           include: |
             **/*.json
             **/*.js
             **/*.html
             **/*.css
+
+      - name: Publish deployment summary
+        if: success()
+        run: |
+          {
+            echo "### Sandbox deployment"
+            echo ""
+            echo "- Function ID: \`${{ steps.deploy.outputs.function-id || 'n/a' }}\`"
+            echo "- Function name: \`${FUNCTION_NAME}\`"
+            echo "- Commit: ${{ github.sha }}"
+          } >> "$GITHUB_STEP_SUMMARY"
