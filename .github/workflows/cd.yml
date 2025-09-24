@@ -84,19 +84,7 @@ jobs:
           fi
           export WORKDIR="$workdir"
           export API_BASE="$api_base"
-          node <<'NODE'
-const fs = require('fs');
-const path = require('path');
-const workdir = process.env.WORKDIR;
-const apiBase = (process.env.API_BASE || '').trim();
-if (!workdir) {
-  process.exit(0);
-}
-const indexPath = path.join(workdir, 'index.html');
-let html = fs.readFileSync(indexPath, 'utf8');
-html = html.replace(/%%API_BASE%%/g, apiBase);
-fs.writeFileSync(indexPath, html);
-NODE
+          node -e "const fs=require('fs');const path=require('path');const workdir=process.env.WORKDIR;const apiBase=(process.env.API_BASE || '').trim();if(!workdir){process.exit(0);}const indexPath=path.join(workdir,'index.html');let html=fs.readFileSync(indexPath,'utf8');html=html.replace(/%%API_BASE%%/g,apiBase);fs.writeFileSync(indexPath,html);"
       - name: Upload static client to Object Storage
         if: env.STATIC_BUCKET != ''
         uses: yc-actions/yc-obj-storage-upload@v3.0.0
