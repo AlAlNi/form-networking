@@ -69,7 +69,7 @@ jobs:
           gateway-name: ${{ env.YC_API_GATEWAY_NAME }}
           spec-file: apigw-openapi.resolved.yaml
       - name: Prepare static client assets
-        if: env.STATIC_BUCKET != ''
+        if: ${{ env.STATIC_BUCKET != '' }}
         env:
           API_DOMAIN: ${{ steps.deploy-gateway.outputs.domain }}
         run: |
@@ -86,7 +86,7 @@ jobs:
           export API_BASE="$api_base"
           node -e "const fs=require('fs');const path=require('path');const workdir=process.env.WORKDIR;const apiBase=(process.env.API_BASE || '').trim();if(!workdir){process.exit(0);}const indexPath=path.join(workdir,'index.html');let html=fs.readFileSync(indexPath,'utf8');html=html.replace(/%%API_BASE%%/g,apiBase);fs.writeFileSync(indexPath,html);"
       - name: Upload static client to Object Storage
-        if: env.STATIC_BUCKET != ''
+        if: ${{ env.STATIC_BUCKET != '' }}
         uses: yc-actions/yc-obj-storage-upload@v3.0.0
         with:
           yc-sa-id: ${{ env.SA_ID }}
