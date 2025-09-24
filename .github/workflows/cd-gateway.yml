@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  id-token: write
+  contents: read        # чтобы checkout работал
+  id-token: write       # обязательно для OIDC
 
 env:
   FOLDER_ID: b1gr0igqr38nt8rm70li
@@ -21,13 +21,14 @@ jobs:
   deploy-gateway:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout current repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # Если деплоишь из ДРУГОГО приватного репозитория — используй PAT:
-      # - name: Checkout (external)
+      # Если openapi лежит в другом приватном репо — вместо блока выше используй этот,
+      # и добавь PAT в секрет CI_REPO_TOKEN (scope: repo):
+      # - name: Checkout external repo
       #   uses: actions/checkout@v4
       #   with:
       #     repository: AlAlNi/form-networking
@@ -35,9 +36,12 @@ jobs:
       #     token: ${{ secrets.CI_REPO_TOKEN }}
       #     fetch-depth: 1
 
-      - name: Validate OpenAPI exists
+      - name: Sanity echo
         run: |
-          test -f "${{ env.OPENAPI_FILE }}" || { echo "OpenAPI spec not found: ${{ env.OPENAPI_FILE }}"; exit 1; }
+          echo "Folder: $FOLDER_ID"
+          echo "SA:     $SA_ID"
+          ls -la $(dirname "$OPENAPI_FILE") || true
+          test -f "$OPENAPI_FILE" || { echo "OpenAPI not found at $OPENAPI_FILE"; exit 1; }
 
       - name: Deploy API Gateway
         uses: yc-actions/yc-api-gateway-deploy@v3.0.0
@@ -48,4 +52,4 @@ jobs:
           openapi-spec: ${{ env.OPENAPI_FILE }}
 
       - name: Done
-        run: echo "API Gateway ${{ env.GATEWAY_NAME }} deployed"
+        run: echo "API Gateway $GATEWAY_NAME deployed"
