@@ -22,7 +22,7 @@ env:
   FUNCTION_RUNTIME: nodejs22
   FUNCTION_ENTRYPOINT: index.handler
   FUNCTION_MEMORY: 128Mb
-  FUNCTION_SOURCEROOT: src/functions/crop-image/
+  FUNCTION_SOURCEROOT: server/
   
 jobs:
   build:
