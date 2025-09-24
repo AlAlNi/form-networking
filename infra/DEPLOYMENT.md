@@ -86,3 +86,20 @@ yc serverless api-gateway get --name ${YC_API_GATEWAY_NAME:-form-networking-gw} 
 
 Both commands output the resource IDs that can be stored in internal
 documentation if needed.
+
+## API Gateway inventory
+
+| Attribute | Value |
+| --------- | ----- |
+| Gateway ID | `d5du79p42aeq8p12sr1t` |
+| Public domain | `https://d5du79p42aeq8p12sr1t.bixf7e87.apigw.yandexcloud.net` |
+
+### Reachability log
+
+- 2025-09-24T11:42:31Z &mdash; `curl -I https://d5du79p42aeq8p12sr1t.bixf7e87.apigw.yandexcloud.net` → `403 Forbidden`.
+  The request was blocked by the outbound network proxy, so verification of the
+  API Gateway status must be repeated from an environment with direct access.
+- `yc serverless api-gateway get --id d5du79p42aeq8p12sr1t --format json`
+  could not be executed because the `yc` CLI is missing in this environment and
+  downloading it is rejected by the proxy. Run the command from a workstation
+  that already has `yc` installed to confirm the gateway status (`ACTIVE`).
