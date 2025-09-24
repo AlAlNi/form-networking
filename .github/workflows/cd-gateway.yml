@@ -17,6 +17,7 @@ env:
   GATEWAY_NAME: form-networking-gw
   OPENAPI_TEMPLATE: apigateway/openapi.yaml
   OPENAPI_FILE: apigateway/openapi.resolved.yaml
+  FUNCTION_NAME: ${{ vars.YC_FUNCTION_NAME || 'form-networking' }}
   FUNCTION_ID: ${{ vars.YC_FUNCTION_ID || '' }}
   FUNCTION_INVOKER_SA_ID: ${{ vars.YC_FUNCTION_INVOKER_SA_ID || '' }}
 
@@ -28,6 +29,49 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Acquire IAM token
+        if: ${{ env.FUNCTION_ID == '' }}
+        id: iam-token
+        uses: yc-actions/yc-iam-token-fed@1.0.0
+        with:
+          yc-sa-id: ${{ env.SA_ID }}
+
+      - name: Resolve Cloud Function ID
+        if: ${{ env.FUNCTION_ID == '' }}
+        env:
+          IAM_TOKEN: ${{ steps.iam-token.outputs.token }}
+          FOLDER_ID: ${{ env.FOLDER_ID }}
+          FUNCTION_NAME: ${{ env.FUNCTION_NAME }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${IAM_TOKEN}" ]]; then
+            echo "Failed to obtain IAM token via workload identity" >&2
+            exit 1
+          fi
+          if [[ -z "${FUNCTION_NAME}" ]]; then
+            echo "FUNCTION_NAME is not configured; set the YC_FUNCTION_NAME repository variable." >&2
+            exit 1
+          fi
+          echo "Resolving Cloud Function ID for '${FUNCTION_NAME}' in folder ${FOLDER_ID}"
+          filter=$(printf "name = '%s'" "${FUNCTION_NAME}")
+          payload=$(jq -n --arg folder "${FOLDER_ID}" --arg filter "${filter}" '{folderId: $folder, filter: $filter}')
+          response=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${IAM_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d "${payload}" \
+            "https://serverless-functions.api.cloud.yandex.net/functions/v1/functions:list")
+          function_id=$(printf '%s' "${response}" | jq -r '.functions[0].id // empty')
+          if [[ -z "${function_id}" ]]; then
+            echo "Failed to resolve Cloud Function ID; ensure '${FUNCTION_NAME}' exists in folder ${FOLDER_ID} or set the YC_FUNCTION_ID repository variable." >&2
+            echo "API response: ${response}" >&2
+            exit 1
+          fi
+          echo "Resolved Cloud Function ID: ${function_id}"
+          {
+            echo "FUNCTION_ID=${function_id}"
+          } >> "${GITHUB_ENV}"
 
       # Если OpenAPI лежит в другом приватном репозитории — используй этот блок вместо верхнего
       # и добавь PAT (scope: repo) в секрет CI_REPO_TOKEN:
@@ -47,8 +91,9 @@ jobs:
           echo "GATEWAY_NAME=${GATEWAY_NAME}"
           echo "OPENAPI_TEMPLATE=${OPENAPI_TEMPLATE}"
           echo "OPENAPI_FILE=${OPENAPI_FILE}"
+          echo "FUNCTION_NAME=${FUNCTION_NAME}"
           if [[ -z "${FUNCTION_ID}" ]]; then
-            echo "FUNCTION_ID is not configured; set the YC_FUNCTION_ID repository variable." >&2
+            echo "FUNCTION_ID is not configured; set the YC_FUNCTION_ID repository variable or ensure the Cloud Function exists." >&2
             exit 1
           fi
           ls -la "$(dirname "${OPENAPI_TEMPLATE}")" || true
