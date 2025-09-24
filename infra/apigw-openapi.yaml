@@ -104,14 +104,6 @@ paths:
         type: cloud_functions
         function_id: ${FUNCTION_ID}
         service_account_id: ${FUNCTION_INVOKER_SA_ID}
-    options:
-      responses:
-        '204':
-          description: CORS preflight
-      x-yc-apigateway-integration:
-        type: cloud_functions
-        function_id: ${FUNCTION_ID}
-        service_account_id: ${FUNCTION_INVOKER_SA_ID}
   /api/applications:
     get:
       responses:
