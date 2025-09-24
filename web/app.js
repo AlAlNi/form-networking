@@ -9,7 +9,18 @@ const nameEl      = document.getElementById('name');
 const usernameEl  = document.getElementById('username');
 const submitBtn   = document.getElementById('submit');
 
-const API_BASE = "%%API_BASE%%"; // Пайплайн подменит на URL API Gateway
+function normalizeBase(value){
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes('%%')) return '';
+  return trimmed.replace(/\/$/, '');
+}
+
+const API_BASE = normalizeBase(window.__API_BASE__) || normalizeBase(document.body?.dataset?.apiBase);
+const buildApiUrl = (path) => {
+  if (!API_BASE) return path;
+  return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+};
 const DEMO = true;
 
 try {
@@ -20,8 +31,8 @@ try {
 
 formEl?.addEventListener('submit', async (e) => {
   e.preventDefault();
-  errorEl.hidden = true;
-  submitBtn.disabled = true;
+  if (errorEl) errorEl.hidden = true;
+  if (submitBtn) submitBtn.disabled = true;
 
   const payload = {
     name: nameEl.value.trim(),
@@ -30,7 +41,7 @@ formEl?.addEventListener('submit', async (e) => {
   };
 
   try {
-    const res = await fetch(`${API_BASE}/api/applications`, {
+    const res = await fetch(buildApiUrl('/api/applications'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -39,12 +50,14 @@ formEl?.addEventListener('submit', async (e) => {
       body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error(await res.text() || 'Server error');
-    formCard.hidden = true;
-    successCard.hidden = false;
+    if (formCard) formCard.hidden = true;
+    if (successCard) successCard.hidden = false;
   } catch (err) {
-    errorEl.textContent = 'Не удалось отправить: ' + (err.message || err);
-    errorEl.hidden = false;
+    if (errorEl){
+      errorEl.textContent = 'Не удалось отправить: ' + (err?.message || err);
+      errorEl.hidden = false;
+    }
   } finally {
-    submitBtn.disabled = false;
+    if (submitBtn) submitBtn.disabled = false;
   }
 });

@@ -6,7 +6,7 @@
   <title>Регистрация участников</title>
   <link rel="stylesheet" href="./app.css">
 </head>
-<body>
+<body data-api-base="%%API_BASE%%">
   <header class="hero">
     <!-- Без картинок на первом шаге, чтобы ничего не «сломалось» -->
     <div class="hero-stub"></div>
@@ -16,27 +16,30 @@
 
   <main class="card" id="card-form">
     <h1>Заявка на нетворкинг</h1>
-    <p class="muted">Шаг 1: чистая статика с кнопкой. Бэкенд позже.</p>
+    <p class="muted">Укажите контакты, чтобы познакомиться с коллегами на событии.</p>
 
     <form id="form">
       <label>Имя
-        <input id="name" name="name" placeholder="Alex (Alexis)" required/>
+        <input id="name" name="name" placeholder="Alex (Alexis)" autocomplete="name" required/>
       </label>
 
       <label>Telegram @username
-        <input id="username" name="username" placeholder="@username" required/>
+        <input id="username" name="username" placeholder="@username" autocomplete="username" required/>
       </label>
 
-      <button id="submit" type="button">Отправить</button>
+      <p id="error" class="error" hidden></p>
+
+      <button id="submit" type="submit">Отправить</button>
     </form>
 
-    <p id="note" class="muted">Нажатие пока ничего не отправляет — это просто заглушка.</p>
+    <p id="note" class="muted">Телеграм-бот напомнит, если появятся новые анкеты для общения.</p>
   </main>
 
-  <script>
-    document.getElementById('submit').addEventListener('click', ()=>{
-      alert('Шаг 1: это статика. Бэкенд подключим на шаге 2.');
-    });
-  </script>
+  <section class="card card-success" id="card-success" hidden>
+    <h2>Заявка отправлена</h2>
+    <p>Мы получили ваши данные. Вернитесь в чат-бот, чтобы увидеть список участников.</p>
+  </section>
+
+  <script src="./app.js" defer></script>
 </body>
 </html>
