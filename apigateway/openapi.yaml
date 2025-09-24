@@ -23,6 +23,9 @@ paths:
                 properties:
                   ok:
                     type: boolean
+                  message:
+                    type: string
+                    description: Human-readable health status.
         '400':
           description: Bad request
       x-yc-apigateway-integration:
